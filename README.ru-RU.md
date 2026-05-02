@@ -18,7 +18,7 @@ fakenews/
 │   │   └── models/
 │   │       ├── main_model.py          # Основной пайплайн
 │   │       ├── baselines.py           # 7 базовых методов
-│   │       └── analysis.py            # 8 модулей интерпретации
+│   │       └── analysis.py            # модули интерпретации
 │   ├── routers/
 │   │   ├── verify.py                  # POST /verify
 │   │   ├── baselines.py               # POST /baselines/{method}
@@ -164,7 +164,6 @@ curl -X POST http://localhost:8000/baselines/gnn/train \
 | Heatmap     | `/analysis/heatmap`     | Матрица «предложение × предложение» NLI (следствие/противоречие) |
 | Sensitivity | `/analysis/sensitivity` | Разброс P(true) по N независимым наборам запросов                |
 | Credibility | `/analysis/credibility` | Вердикт, взвешенный с учетом достоверности, по сравнению с первоначальным вердиктом                        |
-| Temporal    | `/analysis/temporal`    | Взвешенный по дате публикации вердикт                 |
 | Errors      | `/analysis/errors`      | Таксономия ошибок на основе набора помеченных результатов                   |
 
 ---
@@ -174,7 +173,7 @@ curl -X POST http://localhost:8000/baselines/gnn/train \
 ```json
 {
   "text": "...",
-  "methods": ["main", "single_rag", "llm_zeroshot", "nli"],
+  "methods": ["main", "llm_zeroshot", "nli"],
   "threshold": 0.5,
   "gold_label": 0
 }
@@ -187,7 +186,6 @@ curl -X POST http://localhost:8000/baselines/gnn/train \
   "gold_label": 0,
   "results": [
     {"method": "main",       "label": "ФЕЙКОВАЯ", "probability": 0.34},
-    {"method": "single_rag", "label": "ФЕЙКОВАЯ", "probability": 0.41},
     {"method": "llm_zeroshot","label": "ФЕЙКОВАЯ","probability": 0.28},
     {"method": "nli",        "label": "ПРАВДИВАЯ","probability": 0.55}
   ],

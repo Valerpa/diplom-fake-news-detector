@@ -49,6 +49,7 @@ def health():
         "device": DEVICE,
         "cuda_available": torch.cuda.is_available(),
         "loaded_models": registry.loaded_models(),
+        "threshold": settings.default_threshold,
         "settings": {
             "cross_encoder_model": settings.cross_encoder_model,
             "nli_model": settings.nli_model,

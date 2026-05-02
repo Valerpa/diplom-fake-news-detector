@@ -159,8 +159,8 @@ class ContradictionHeatmapService:
         for cs in claim_sents:
             for es in ev_sents:
                 out = nli(
-                    sequences=cs[:512],
-                    candidate_labels=_NLI_LABELS,
+                    sequences=es[:512],
+                    candidate_labels=[cs[:512]],
                     hypothesis_template="{}",
                 )
                 scores = dict(zip(out["labels"], out["scores"]))
@@ -242,7 +242,6 @@ class QuerySensitivityService:
     def _group_by_query(queries: list[str],
                         evidences: list[dict],
                         n_per: int) -> list[list[dict]]:
-        """Split flat evidence list back into per-query groups."""
         groups = []
         idx = 0
         for _ in queries:
@@ -276,47 +275,6 @@ def source_credibility(result: dict,
     )
     return weighted
 
-
-def temporal_analysis(result: dict,
-                      claim_date: datetime | None = None,
-                      decay_days: float = 90.0) -> dict:
-    """
-    Attach parsed dates and recency weights to evidence.
-    Recompute probability with recency-weighted scores.
-    """
-    import copy
-    if claim_date is None:
-        claim_date = datetime.now(tz=timezone.utc)
-
-    enriched = copy.deepcopy(result)
-    dated_count = undated_count = 0
-
-    for ev in enriched.get("evidence", []):
-        dt = _parse_date(ev.get("date_str", ""))
-        if dt:
-            days = abs((claim_date - dt).days)
-            ev["parsed_date"] = dt.isoformat()
-            ev["days_from_claim"] = days
-            ev["recency_weight"] = float(np.exp(-days / decay_days))
-            dated_count += 1
-        else:
-            ev["parsed_date"] = None
-            ev["days_from_claim"] = None
-            ev["recency_weight"] = 0.5
-            undated_count += 1
-
-    w_scores = [
-        ev.get("score", 0.0) * ev["recency_weight"]
-        for ev in enriched["evidence"] if "score" in ev
-    ]
-    prob_temporal = _sigmoid(float(np.mean(w_scores))) if w_scores else 0.5
-
-    enriched["dated_count"] = dated_count
-    enriched["undated_count"] = undated_count
-    enriched["prob_temporal"] = prob_temporal
-    enriched["label_temporal"] = _label(prob_temporal)
-    enriched["verdict_changed"] = (result.get("label") != enriched["label_temporal"])
-    return enriched
 
 
 def _parse_date(date_str: str) -> datetime | None:
@@ -361,11 +319,6 @@ def _categorise_error(prob: float, pred: int, gold: int,
 
 
 def error_analysis(results_with_labels: list[dict]) -> dict:
-    """
-    Compute error taxonomy over a list of:
-      {"text": str, "gold": int, "pred": int, "probability": float,
-       "evidence": [...], "category": str (computed here)}
-    """
     from sklearn.metrics import accuracy_score, f1_score
 
     records = []
@@ -402,10 +355,6 @@ def error_analysis(results_with_labels: list[dict]) -> dict:
 
 def inter_method_agreement(method_results: dict[str, dict],
                            threshold: float = 0.5) -> dict:
-    """
-    method_results: {"method_name": verify_result_dict, ...}
-    Returns agreement metrics and per-method verdicts.
-    """
     verdicts = {}
     for name, res in method_results.items():
         prob = res.get("probability")
@@ -417,10 +366,21 @@ def inter_method_agreement(method_results: dict[str, dict],
         }
 
     preds = [v["pred"] for v in verdicts.values()
-             if verdicts[name]["label"] not in ("ОШИБКА", "НЕДОСТАТОЧНО ДАННЫХ")]
-    agree_frac = float(np.mean(preds)) if preds else 0.5
-    consensus = _label(agree_frac, threshold)
-    disagreement = len(set(preds)) > 1
+             if v["label"] not in ("ОШИБКА", "НЕДОСТАТОЧНО ДАННЫХ")]
+    if not preds:
+        return {
+            "verdicts": verdicts,
+            "agreement_fraction": 0.5,
+            "consensus_label": "НЕДОСТАТОЧНО ДАННЫХ",
+            "disagreement": False,
+            "fleiss_kappa": None,
+        }
+    from collections import Counter
+    vote_counts = Counter(preds)
+    majority_pred = vote_counts.most_common(1)[0][0]
+    agree_frac = float(vote_counts[majority_pred] / len(preds))
+    consensus = "ПРАВДИВАЯ" if majority_pred == 1 else "ФЕЙКОВАЯ"
+    disagreement = len(vote_counts) > 1
 
     kappa = None
     if len(preds) >= 2:

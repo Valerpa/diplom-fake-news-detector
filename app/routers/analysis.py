@@ -1,3 +1,4 @@
+import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Body
 from app.schemas.requests import AnalysisRequest

@@ -1,5 +1,7 @@
+import asyncio
 from fastapi import APIRouter, HTTPException, UploadFile, File
 import shutil, tempfile, os
+from app.core.config import get_settings
 from app.schemas.requests import BaselineRequest
 from app.schemas.responses import BaselineResponse, EvidenceItem
 from app.services.models.baselines import (
@@ -12,6 +14,7 @@ from app.services.models.baselines import (
 )
 
 router = APIRouter(prefix="/baselines", tags=["baselines"])
+settings = get_settings()
 
 _rubert = RuBERTService()
 _llm = LLMClassifierService()
@@ -40,7 +43,7 @@ def _to_response(method: str, text: str, result: dict) -> BaselineResponse:
              summary="Fine-tuned RuBERT content-only classifier")
 def rubert(req: BaselineRequest) -> BaselineResponse:
 
-    result = _rubert.verify(req.text, threshold=req.threshold)
+    result = _rubert.verify(req.text, threshold=settings.default_threshold)
     return _to_response("rubert", req.text, result)
 
 
@@ -56,7 +59,9 @@ async def rubert_train(
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
     try:
-        _rubert.train(tmp_path, text_col=text_col, label_col=label_col, epochs=epochs)
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _rubert.train(tmp_path, text_col=text_col, label_col=label_col, epochs=epochs)
+        )
     finally:
         os.unlink(tmp_path)
     return {"status": "ok", "message": "RuBERT fine-tuned successfully."}
@@ -69,7 +74,7 @@ def llm_classifier(req: BaselineRequest) -> BaselineResponse:
     result = _llm.verify(
         req.text,
         few_shot_examples=req.few_shot_examples,
-        threshold=req.threshold,
+        threshold=settings.default_threshold,
     )
     return _to_response("llm", req.text, result)
 
@@ -82,7 +87,7 @@ def corag(req: BaselineRequest) -> BaselineResponse:
         req.text,
         max_rounds=req.max_rounds,
         num_results=req.num_results,
-        threshold=req.threshold,
+        threshold=settings.default_threshold,
     )
     return _to_response("corag", req.text, result)
 
@@ -95,7 +100,7 @@ def steel(req: BaselineRequest) -> BaselineResponse:
         req.text,
         max_rounds=req.max_rounds,
         num_results=req.num_results,
-        threshold=req.threshold,
+        threshold=settings.default_threshold,
     )
     return _to_response("steel", req.text, result)
 
@@ -108,7 +113,7 @@ def nli(req: BaselineRequest) -> BaselineResponse:
         req.text,
         num_queries=req.num_queries,
         num_results=req.num_results,
-        threshold=req.threshold,
+        threshold=settings.default_threshold,
     )
     return _to_response("nli", req.text, result)
 
@@ -121,7 +126,7 @@ def gnn(req: BaselineRequest) -> BaselineResponse:
         req.text,
         num_queries=req.num_queries,
         num_results=req.num_results,
-        threshold=req.threshold,
+        threshold=settings.default_threshold,
     )
     return _to_response("gnn", req.text, result)
 
@@ -140,8 +145,10 @@ async def gnn_train(
         shutil.copyfileobj(file.file, tmp)
         tmp_path = tmp.name
     try:
-        _gnn.train(tmp_path, text_col=text_col, label_col=label_col,
-                   epochs=epochs, num_queries=num_queries, num_results=num_results)
+        await asyncio.get_event_loop().run_in_executor(
+            None, lambda: _gnn.train(tmp_path, text_col=text_col, label_col=label_col,
+                                     epochs=epochs, num_queries=num_queries, num_results=num_results)
+        )
     finally:
         os.unlink(tmp_path)
     return {"status": "ok", "message": "GNN trained successfully."}

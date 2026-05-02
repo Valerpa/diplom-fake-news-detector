@@ -295,8 +295,6 @@ _STEEL_VERdict_SYS = (
 
 
 class STEELService:
-    """Multi-round retrieval with LLM relevance filtering and adaptive re-querying."""
-
     def __init__(self):
         self.llm = GigaChatService()
         self.search = YandexSearchService()
@@ -404,10 +402,10 @@ class NLIClassifierService:
         e_sum = n_sum = c_sum = 0.0
 
         for ev in evidences:
-            text = f"{ev['title']}. {ev['content'][:300]}"
+            premise = f"{ev['title']}. {ev['content'][:300]}"
             out = nli(
-                sequences=news_text[:512],
-                candidate_labels=_NLI_LABELS,
+                sequences=premise[:512],
+                candidate_labels=[news_text[:512]],
                 hypothesis_template="{}",
             )
             scores = dict(zip(out["labels"], out["scores"]))
