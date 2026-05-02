@@ -1,12 +1,14 @@
 from typing import List
 from fastapi import APIRouter
 from pydantic import BaseModel, Field
+from app.core.config import get_settings
 from app.schemas.requests import VerifyRequest, GenerateQueriesRequest, RunWithQueriesRequest
 from app.schemas.responses import VerifyResponse, EvidenceItem
 from app.services.models.main_model import MainVerificationService
 
 router   = APIRouter(prefix="/verify", tags=["verify"])
 _service = MainVerificationService()
+settings = get_settings()
 
 
 class QueriesResponse(BaseModel):
@@ -30,7 +32,7 @@ def run_with_queries(req: RunWithQueriesRequest) -> VerifyResponse:
         news_text=req.text,
         queries=req.queries,
         num_results=req.num_results,
-        threshold=req.threshold,
+        threshold=settings.default_threshold,
     )
     return VerifyResponse(
         text=req.text,
@@ -51,7 +53,7 @@ def verify(req: VerifyRequest) -> VerifyResponse:
         news_text=req.text,
         num_queries=req.num_queries,
         num_results=req.num_results,
-        threshold=req.threshold,
+        threshold=settings.default_threshold,
     )
     return VerifyResponse(
         text=req.text,

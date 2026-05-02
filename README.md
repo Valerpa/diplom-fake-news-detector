@@ -18,7 +18,7 @@ fakenews/
 │   │   └── models/
 │   │       ├── main_model.py          # Original pipeline
 │   │       ├── baselines.py           # 7 baseline methods
-│   │       └── analysis.py            # 8 explainability modules
+│   │       └── analysis.py            # explainability modules
 │   ├── routers/
 │   │   ├── verify.py                  # POST /verify
 │   │   ├── baselines.py               # POST /baselines/{method}
@@ -164,7 +164,6 @@ If `result` is omitted, the main model runs first automatically.
 | Heatmap | `/analysis/heatmap` | NLI sentence×sentence matrix (entailment/contradiction) |
 | Sensitivity | `/analysis/sensitivity` | P(true) variance across N independent query sets |
 | Credibility | `/analysis/credibility` | Credibility-weighted vs. original verdict |
-| Temporal | `/analysis/temporal` | Recency-weighted verdict using publication dates |
 | Errors | `/analysis/errors` | Failure taxonomy on a batch of labeled results |
 
 ---
@@ -174,7 +173,7 @@ If `result` is omitted, the main model runs first automatically.
 ```json
 {
   "text": "...",
-  "methods": ["main", "single_rag", "llm_zeroshot", "nli"],
+  "methods": ["main", "llm_zeroshot", "nli"],
   "threshold": 0.5,
   "gold_label": 0
 }
