@@ -20,7 +20,7 @@ class EvidenceItem(BaseModel):
 
 class VerifyResponse(BaseModel):
     text: str
-    label: str = Field(..., description="'ПРАВДИВАЯ' | 'ФЕЙКОВАЯ' | 'НЕДОСТАТОЧНО ДАННЫХ'")
+    label: str = Field(..., description="'ПРАВДИВАЯ' | 'ЛОЖНАЯ' | 'НЕДОСТАТОЧНО ДАННЫХ'")
     probability: float | None
     queries: list[str]
     evidence: list[EvidenceItem]

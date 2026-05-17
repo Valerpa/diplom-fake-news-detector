@@ -1,5 +1,6 @@
 import logging
 import re
+import asyncio
 import xml.etree.ElementTree as ET
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
@@ -31,24 +32,35 @@ class YandexSearchService:
             auth=settings.yandex_auth,
         )
 
-    def search(self, query: str,
+    def _search_sync(self, query: str,
                n: int = 5,
                seen_urls: set | None = None) -> list[dict]:
         if seen_urls is None:
             seen_urls = set()
+        try:
+            search = self._sdk.search_api.web(search_type="ru", user_agent=USER_AGENT)
+            operation = search.run_deferred(query, format="xml", page=0)
+            xml = operation.wait().decode("utf-8")
+            return self._parse(xml, n, seen_urls)
+        except Exception as e:
+            logger.error(f"Yandex Search failed for query {query}: {e}")
+            return []
 
-        search = self._sdk.search_api.web(search_type="ru", user_agent=USER_AGENT)
-        operation = search.run_deferred(query, format="xml", page=0)
-        xml = operation.wait().decode("utf-8")
-        return self._parse(xml, n, seen_urls)
+    async def search(self, query: str, n: int = 5,
+                     seen_urls: set | None = None) -> list[dict]:
+        if seen_urls is None:
+            seen_urls = set()
+        return await asyncio.to_thread(
+            self._search_sync, query, n, seen_urls
+        )
 
-    def multi_search(self, queries: list[str],
-                     n_per_query: int = 5) -> list[dict]:
-        """Execute multiple queries with global deduplication."""
+    async def multi_search(self, queries: list[str],
+                           n_per_query: int = 5) -> list[dict]:
         seen = set()
         evidences = []
         for q in queries:
-            evidences.extend(self.search(q, n=n_per_query, seen_urls=seen))
+            batch = await self.search(q, n=n_per_query, seen_urls=seen)
+            evidences.extend(batch)
         return evidences
 
     def _parse(self, xml_content: str, limit: int, seen: set) -> list[dict]:
@@ -93,35 +105,60 @@ class GigaChatService:
             verify_ssl_certs=False
         )
 
-    def complete(self, system: str, user: str) -> str:
-        payload = Chat(messages=[
-            Messages(role=MessagesRole.SYSTEM, content=system),
-            Messages(role=MessagesRole.USER, content=user),
-        ])
-        return self._giga.chat(payload).choices[0].message.content.strip()
+    def _complete_sync(self, system: str, user: str) -> str:
+        try:
+            payload = Chat(messages=[
+                Messages(role=MessagesRole.SYSTEM, content=system),
+                Messages(role=MessagesRole.USER, content=user),
+            ])
+            return self._giga.chat(
+                payload
+            ).choices[0].message.content.strip()
+        except Exception as e:
+            logger.error("GigaChat completion failed: %s", e)
+            return ""
 
-    def complete_messages(self, messages: list[dict]) -> str:
-        role_map = {
-            "system": MessagesRole.SYSTEM,
-            "user": MessagesRole.USER,
-            "assistant": MessagesRole.ASSISTANT,
-        }
-        giga_msgs = [
-            Messages(role=role_map[m["role"]], content=m["content"])
-            for m in messages
-        ]
-        return self._giga.chat(
-            Chat(messages=giga_msgs)
-        ).choices[0].message.content.strip()
+    async def complete(self, system: str, user: str) -> str:
+        return await asyncio.to_thread(
+            self._complete_sync, system, user
+        )
 
-    def generate_queries(self, news_text: str, n: int = 5) -> list[str]:
-        raw = self.complete(
+    def _complete_messages_sync(self, messages: list[dict]) -> str:
+        try:
+            role_map = {
+                "system": MessagesRole.SYSTEM,
+                "user": MessagesRole.USER,
+                "assistant": MessagesRole.ASSISTANT,
+            }
+            giga_msgs = [
+                Messages(role=role_map[m["role"]], content=m["content"])
+                for m in messages
+            ]
+            return self._giga.chat(
+                Chat(messages=giga_msgs)
+            ).choices[0].message.content.strip()
+        except Exception as e:
+            logger.error("GigaChat multi-message failed: %s", e)
+            return ""
+
+    async def complete_messages(self, messages: list[dict]) -> str:
+        return await asyncio.to_thread(
+            self._complete_messages_sync, messages
+        )
+
+    async def generate_queries(self, news_text: str,
+                               n: int = 5) -> list[str]:
+        raw = await self.complete(
             _QUERY_SYSTEM.format(n=n),
             f"Новость: {news_text}\nКоличество запросов: {n}",
         )
+        if not raw:
+            logger.warning("Query generation returned empty, using fallback")
+            return [news_text[:150]]
+
         queries = []
         for line in raw.split("\n"):
             line = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
             if len(line) > 5:
                 queries.append(line)
-        return queries[:n]
+        return queries[:n] if queries else [news_text[:150]]

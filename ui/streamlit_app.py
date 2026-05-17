@@ -142,6 +142,13 @@ STRINGS = {
         "computing_errors": "Computing error taxonomy…",
         "col_not_found": "not found in CSV.",
         "lang_toggle": "🇷🇺 RU",
+        "sidebar_models": "Models",
+        "models_none": "No models required (API only)",
+        "models_loaded": "loaded",
+        "models_not_loaded": "not loaded",
+        "btn_preload": "Load models",
+        "models_loading": "Loading models…",
+        "models_ready": "All required models are loaded ✓",
     },
     "ru": {
         "page_title": "Детектор фейков",
@@ -206,7 +213,7 @@ STRINGS = {
         "an_attr_title": "Доказательства по вкладу в вердикт",
         # errors tab
         "err_title": "##### Загрузите размеченный датасет для анализа ошибок",
-        "err_caption": "CSV с колонками: `text` (текст новости) и `label` (0 = фейк, 1 = правда)",
+        "err_caption": "CSV с колонками: `text` (текст новости) и `label` (0 = ложь, 1 = правда)",
         "err_upload": "CSV файл",
         "err_text_col": "Название колонки с текстом",
         "err_label_col": "Название колонки с меткой",
@@ -266,6 +273,13 @@ STRINGS = {
         "computing_errors": "Вычисление таксономии ошибок…",
         "col_not_found": "не найдена в CSV.",
         "lang_toggle": "🇬🇧 EN",
+        "sidebar_models": "Модели",
+        "models_none": "Модели не требуются (только API)",
+        "models_loaded": "загружена",
+        "models_not_loaded": "не загружена",
+        "btn_preload": "Загрузить модели",
+        "models_loading": "Загрузка моделей…",
+        "models_ready": "Все необходимые модели загружены ✓",
     },
 }
 
@@ -275,10 +289,21 @@ if "history" not in st.session_state:
     st.session_state["history"] = []
 if "ea_stop" not in st.session_state:
     st.session_state["ea_stop"] = False
+if "news_text" not in st.session_state:
+    st.session_state["news_text"] = ""
+if "cmp_text" not in st.session_state:
+    st.session_state["cmp_text"] = ""
+if "an_text" not in st.session_state:
+    st.session_state["an_text"] = ""
 
 
 def T(key: str) -> str:
     return STRINGS[st.session_state["lang"]].get(key, key)
+
+
+def _sync_text(text: str):
+    st.session_state["cmp_text"] = text
+    st.session_state["an_text"] = text
 
 
 def _add_to_history(text: str, result: dict):
@@ -303,6 +328,9 @@ def _clear_all():
                 "an_module_ran", "ea_result", "history", "pending_queries"]:
         st.session_state.pop(key, None)
     st.session_state["history"] = []
+    st.session_state["news_text"] = ""
+    st.session_state["cmp_text"] = ""
+    st.session_state["an_text"] = ""
 
 
 st.markdown("""
@@ -489,8 +517,8 @@ def render_verdict_badge(label: str):
     if label == "ПРАВДИВАЯ":
         st.markdown('<span class="verdict-real"><span class="verdict-dot-real"></span> ПРАВДИВАЯ</span>',
                     unsafe_allow_html=True)
-    elif label == "ФЕЙКОВАЯ":
-        st.markdown('<span class="verdict-fake"><span class="verdict-dot-fake"></span> ФЕЙКОВАЯ</span>',
+    elif label == "ЛОЖНАЯ":
+        st.markdown('<span class="verdict-fake"><span class="verdict-dot-fake"></span> ЛОЖНАЯ</span>',
                     unsafe_allow_html=True)
     else:
         st.markdown(f'<span class="verdict-unknown">{html.escape(label)}</span>', unsafe_allow_html=True)
@@ -509,7 +537,7 @@ def render_confidence_bar(prob: float | None, threshold: float = 0.5):
     <div class="conf-marker" style="left:{thr}%"></div>
   </div>
   <div class="conf-labels">
-    <span>ФЕЙКОВАЯ</span>
+    <span>ЛОЖНАЯ</span>
     <span>threshold {threshold:.2f}</span>
     <span>ПРАВДИВАЯ</span>
   </div>
@@ -519,7 +547,7 @@ def render_confidence_bar(prob: float | None, threshold: float = 0.5):
 def _apply_threshold(prob: float | None, threshold: float) -> str:
     if prob is None:
         return "НЕДОСТАТОЧНО ДАННЫХ"
-    return "ПРАВДИВАЯ" if prob >= threshold else "ФЕЙКОВАЯ"
+    return "ПРАВДИВАЯ" if prob >= threshold else "ЛОЖНАЯ"
 
 
 def render_evidence_list(evidences: list, ev_filter: str = "all"):
@@ -613,9 +641,52 @@ with st.sidebar:
     if "error" not in health:
         threshold = health.get("threshold", 0.5)
         st.caption(f"{T('api_ok')} {health.get('device', '?')}")
-        loaded = health.get("loaded_models", [])
-        if loaded:
-            st.caption(f"{T('api_loaded')} " + ", ".join(loaded))
+        loaded_models = health.get("loaded_models", [])
+        if loaded_models:
+            st.caption(f"{T('api_loaded')} " + ", ".join(loaded_models))
+
+        # --- Model preload section ---
+        METHOD_MODELS = {
+            "Main model": ["cross_encoder"],
+            "CoRAG": [],
+            "STEEL": [],
+            "NLI classifier": ["nli"],
+            "LLM zero-shot": [],
+            "RuBERT": [],
+            "GNN": ["sbert"],
+        }
+        required = METHOD_MODELS.get(method, [])
+
+        if required:
+            st.markdown(f"### {T('sidebar_models')}")
+            all_ready = True
+            for model_name in required:
+                is_loaded = model_name in loaded_models
+                if not is_loaded:
+                    all_ready = False
+                status = T("models_loaded") if is_loaded else T("models_not_loaded")
+                color = "#3b6d11" if is_loaded else "#a32d2d"
+                dot = "🟢" if is_loaded else "🔴"
+                st.markdown(
+                    f'<div style="font-size:0.90rem;padding:3px 0">'
+                    f'{dot} <span style="font-size:0.90rem">{model_name}</span> '
+                    f'<span style="color:{color};font-size:0.90rem">— {status}</span></div>',
+                    unsafe_allow_html=True,
+                )
+            if all_ready:
+                st.caption(T("models_ready"))
+            else:
+                if st.button(T("btn_preload"), key="btn_preload"):
+                    to_load = [m for m in required if m not in loaded_models]
+                    with st.spinner(T("models_loading")):
+                        resp = _post("/models/preload", to_load, timeout=300.0)
+                    if resp and "error" not in resp:
+                        st.rerun()
+                    elif resp:
+                        st.error(resp.get("error", ""))
+        else:
+            st.markdown(f"### {T('sidebar_models')}")
+            st.caption(T("models_none"))
     else:
         st.caption(T("api_unreachable"))
     st.markdown("---")
@@ -627,7 +698,7 @@ with st.sidebar:
         st.markdown(f"### {T('sidebar_history')}")
         for h_idx, h in enumerate(history):
             lbl = h["label"]
-            color = "#a32d2d" if lbl == "ФЕЙКОВАЯ" else "#3b6d11" if lbl == "ПРАВДИВАЯ" else "#888"
+            color = "#a32d2d" if lbl == "ЛОЖНАЯ" else "#3b6d11" if lbl == "ПРАВДИВАЯ" else "#888"
             prob_str = f"{h['probability']:.2f}" if h["probability"] is not None else "—"
             text_preview = html.escape(h["text"][:50])
             if st.button(
@@ -636,6 +707,8 @@ with st.sidebar:
             ):
                 st.session_state["last_result"] = h["full_result"]
                 st.session_state["last_text"] = h["full_text"]
+                st.session_state["news_text"] = h["full_text"]
+                _sync_text(h["full_text"])
                 st.rerun()
 
 title_col, badge_col, lang_col = st.columns([5, 2, 1])
@@ -659,6 +732,7 @@ with tab_verify:
         T("news_text_label"),
         placeholder=T("news_text_ph"),
         height=110,
+        key="news_text",
     )
     if news_text.strip() and len(news_text.strip()) < MIN_TEXT_LENGTH:
         st.markdown(f'<div class="warn-box">{T("short_text_warn")}</div>',
@@ -724,6 +798,7 @@ with tab_verify:
                     })
                 st.session_state["last_result"] = result
                 st.session_state["last_text"] = news_text
+                _sync_text(news_text)
                 st.session_state.pop("pending_queries", None)
                 if "error" not in result:
                     _add_to_history(news_text, result)
@@ -744,6 +819,7 @@ with tab_verify:
                     result = _post(endpoint, body)
                 st.session_state["last_result"] = result
                 st.session_state["last_text"] = news_text
+                _sync_text(news_text)
                 if "error" not in result:
                     _add_to_history(news_text, result)
 
@@ -846,7 +922,6 @@ with (tab_compare):
 
     cmp_text = st.text_area(
         T("news_text_label"),
-        value=st.session_state.get("last_text", ""),
         height=90,
         key="cmp_text",
     )
@@ -870,10 +945,12 @@ with (tab_compare):
     with gold_col:
         gold_opts = T("cmp_gold_opts")
         gold_input = st.selectbox(T("cmp_gold"), options=gold_opts)
-        if "ФЕЙКОВАЯ" in gold_input:
+        if "(0)" in gold_input:
             gold_label = 0
-        elif "ПРАВДИВАЯ" in gold_input:
+        elif "(1)" in gold_input:
             gold_label = 1
+        else:
+            gold_label = None
 
     if st.button(T("btn_compare"), type="primary", key="btn_compare"):
         if not cmp_text.strip():
@@ -932,7 +1009,7 @@ with (tab_compare):
                     c2.progress(prob)
                 else:
                     c2.caption("—")
-                vc = "#a32d2d" if label == "ФЕЙКОВАЯ" else "#3b6d11" if label == "ПРАВДИВАЯ" else "#888"
+                vc = "#a32d2d" if label == "ЛОЖНАЯ" else "#3b6d11" if label == "ПРАВДИВАЯ" else "#888"
                 c3.markdown(
                     f'<div style="font-size:0.90rem;font-weight:500;color:{vc};padding-top:6px">{html.escape(label)}</div>',
                     unsafe_allow_html=True)
@@ -946,7 +1023,6 @@ with tab_analysis:
 
     an_text = st.text_area(
         T("news_text_label"),
-        value=st.session_state.get("last_text", ""),
         height=90,
         key="an_text",
     )
@@ -956,7 +1032,7 @@ with tab_analysis:
         "Attribution": "/analysis/attribution",
         "Атрибуция": "/analysis/attribution",
         "Span highlighting": "/analysis/spans",
-        "Устойчивость вердикта": "/analysis/spans",
+        "Устойчивость": "/analysis/spans",
         "NLI heatmap": "/analysis/heatmap",
         "NLI тепловая карта": "/analysis/heatmap",
         "Sensitivity": "/analysis/sensitivity",
@@ -1228,8 +1304,8 @@ with tab_errors:
             st.caption(T("err_records"))
             st.dataframe(pd.DataFrame([{
                 "Text": r.get("text", "")[:70] + "…",
-                T("err_gold"): "ПРАВДА" if r.get("gold") == 1 else "ФЕЙК",
-                T("err_pred"): "ПРАВДА" if r.get("pred") == 1 else "ФЕЙК",
+                T("err_gold"): "ПРАВДА" if r.get("gold") == 1 else "ЛОЖЬ",
+                T("err_pred"): "ПРАВДА" if r.get("pred") == 1 else "ЛОЖЬ",
                 "P(true)": round(r.get("probability") or 0, 3),
                 T("err_category"): r.get("category", ""),
                 T("err_correct"): "✓" if r.get("correct") else "✗",

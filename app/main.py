@@ -58,6 +58,30 @@ def health():
     }
 
 
+VALID_MODELS = {"cross_encoder", "nli", "qa", "sbert"}
+
+
+@app.post("/models/preload", tags=["health"],
+          summary="Pre-load one or more models into memory")
+def preload_models(models: list[str]):
+    loaded = []
+    errors = {}
+    for name in models:
+        if name not in VALID_MODELS:
+            errors[name] = f"Unknown model. Valid: {VALID_MODELS}"
+            continue
+        try:
+            getattr(registry, name)
+            loaded.append(name)
+        except Exception as e:
+            errors[name] = str(e)
+    return {
+        "loaded": loaded,
+        "errors": errors,
+        "all_loaded": registry.loaded_models(),
+    }
+
+
 @app.get("/", tags=["health"], include_in_schema=False)
 def root():
     return {"message": "Fake News Detection API. Visit /docs for full documentation."}

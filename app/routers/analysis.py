@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime, timezone
 from fastapi import APIRouter, Body
@@ -10,6 +11,7 @@ from app.schemas.responses import (
     CredibilityResponse,
     TemporalResponse,
     ErrorAnalysisResponse, ErrorRecord,
+    EvidenceItem,
 )
 from app.services.models.main_model import MainVerificationService
 from app.services.models.analysis import (
@@ -18,7 +20,6 @@ from app.services.models.analysis import (
     ContradictionHeatmapService,
     QuerySensitivityService,
     source_credibility,
-    temporal_analysis,
     error_analysis,
     inter_method_agreement,
 )
@@ -30,25 +31,24 @@ _heat_svc = ContradictionHeatmapService()
 _sens_svc = QuerySensitivityService()
 
 
-def _get_result(req: AnalysisRequest) -> dict:
-
+async def _get_result(req: AnalysisRequest) -> dict:
     if req.result:
         return req.result
-    return _main.verify(req.text)
+    return await _main.verify(req.text)
 
 
 @router.post("/attribution", response_model=list[AttributionItem],
              summary="Rank evidence by contribution to the verdict")
-def attribution(req: AnalysisRequest) -> list[AttributionItem]:
+async def attribution(req: AnalysisRequest) -> list[AttributionItem]:
 
-    result = _get_result(req)
+    result = await _get_result(req)
     rows = evidence_attribution(result, top_k=req.top_k_docs * 3)
     return [
         AttributionItem(
             domain=r["domain"],
             title=r["title"],
             score=r["score"],
-            **{"P(true)": r["prob_true"]},
+            prob_true=r["prob_true"],
             contribution=r["contribution"],
             direction=r["direction"],
             url=r["url"],
@@ -59,28 +59,28 @@ def attribution(req: AnalysisRequest) -> list[AttributionItem]:
 
 @router.post("/spans", response_model=SpanAnalysisResponse,
              summary="Extract specific contradicting spans per sub-claim")
-def spans(req: AnalysisRequest) -> SpanAnalysisResponse:
+async def spans(req: AnalysisRequest) -> SpanAnalysisResponse:
 
-    result = _get_result(req)
-    analysis = _span_svc.analyse(req.text, result, top_k_docs=req.top_k_docs)
+    result = await _get_result(req)
+    analysis = await _span_svc.analyse(req.text, result, top_k_docs=req.top_k_docs)
     return SpanAnalysisResponse(**analysis)
 
 
 @router.post("/heatmap", response_model=HeatmapResponse,
              summary="NLI sentence-level contradiction heatmap")
-def heatmap(req: AnalysisRequest) -> HeatmapResponse:
+async def heatmap(req: AnalysisRequest) -> HeatmapResponse:
 
-    result = _get_result(req)
+    result = await _get_result(req)
     evs = sorted(
         [ev for ev in result.get("evidence", []) if "score" in ev],
-        key=lambda e: e["score"]  # most contradicting first
+        key=lambda e: e["score"]
     )
     if not evs:
         return HeatmapResponse(
             claim_sentences=[], evidence_sentences=[],
             cells=[], domain="", title=""
         )
-    data = _heat_svc.build(req.text, evs[0])
+    data = await asyncio.to_thread(_heat_svc.build, req.text, evs[0])
     cells = [HeatmapCell(**c) for c in data["cells"]]
     return HeatmapResponse(
         claim_sentences=data["claim_sentences"],
@@ -93,13 +93,8 @@ def heatmap(req: AnalysisRequest) -> HeatmapResponse:
 
 @router.post("/sensitivity", response_model=SensitivityResponse,
              summary="Measure verdict stability across different query sets")
-def sensitivity(req: AnalysisRequest) -> SensitivityResponse:
-    """
-    Runs the retrieval pipeline `sensitivity_trials` times with freshly
-    generated query sets and measures variance in P(true).
-    std < 0.10 → verdict_stable = True.
-    """
-    data = _sens_svc.run(
+async def sensitivity(req: AnalysisRequest) -> SensitivityResponse:
+    data = await _sens_svc.run(
         req.text,
         n_trials=req.sensitivity_trials,
     )
@@ -116,12 +111,11 @@ def sensitivity(req: AnalysisRequest) -> SensitivityResponse:
 
 @router.post("/credibility", response_model=CredibilityResponse,
              summary="Re-weight evidence by domain credibility")
-def credibility(req: AnalysisRequest) -> CredibilityResponse:
+async def credibility(req: AnalysisRequest) -> CredibilityResponse:
 
-    result = _get_result(req)
+    result = await _get_result(req)
     weighted = source_credibility(result, req.credibility_overrides)
 
-    from app.schemas.responses import EvidenceItem
     return CredibilityResponse(
         original_label=result.get("label", ""),
         original_probability=result.get("probability"),
@@ -136,41 +130,9 @@ def credibility(req: AnalysisRequest) -> CredibilityResponse:
     )
 
 
-@router.post("/temporal", response_model=TemporalResponse,
-             summary="Recency-weighted analysis using evidence publication dates")
-def temporal(req: AnalysisRequest) -> TemporalResponse:
-
-    result = _get_result(req)
-    claim_dt: datetime | None = None
-    if req.claim_date:
-        try:
-            from dateutil import parser as dp
-            claim_dt = dp.parse(req.claim_date)
-            if claim_dt.tzinfo is None:
-                claim_dt = claim_dt.replace(tzinfo=timezone.utc)
-        except Exception:
-            claim_dt = None
-
-    enriched = temporal_analysis(result, claim_date=claim_dt)
-
-    from app.schemas.responses import EvidenceItem
-    return TemporalResponse(
-        dated_count=enriched["dated_count"],
-        undated_count=enriched["undated_count"],
-        prob_temporal=enriched["prob_temporal"],
-        label_temporal=enriched["label_temporal"],
-        verdict_changed=enriched["verdict_changed"],
-        evidence=[
-            EvidenceItem(**{k: v for k, v in ev.items()
-                            if k in EvidenceItem.model_fields})
-            for ev in enriched.get("evidence", [])
-        ],
-    )
-
-
 @router.post("/errors", response_model=ErrorAnalysisResponse,
              summary="Error taxonomy on a batch of labeled results")
-def errors(
+async def errors(
         items: list = Body(
             ...,
             example=[
@@ -178,8 +140,8 @@ def errors(
                  "probability": 0.62, "evidence": []}
             ],
             description=(
-                    "List of objects with keys: text, gold (int), pred (int), "
-                    "probability (float), evidence (list)"
+                "List of objects with keys: text, gold (int), pred (int), "
+                "probability (float), evidence (list)"
             ),
         )
 ) -> ErrorAnalysisResponse:
@@ -188,8 +150,12 @@ def errors(
     return ErrorAnalysisResponse(
         accuracy=analysis["accuracy"],
         f1_weighted=analysis["f1_weighted"],
-        records=[ErrorRecord(**r) for r in analysis["records"]
-                 if set(r.keys()) >= {"text", "gold", "pred", "probability",
-                                      "n_evidence", "category", "correct", "top_domain"}],
+        records=[
+            ErrorRecord(**r) for r in analysis["records"]
+            if set(r.keys()) >= {
+                "text", "gold", "pred", "probability",
+                "n_evidence", "category", "correct", "top_domain"
+            }
+        ],
         category_counts=analysis["category_counts"],
     )
