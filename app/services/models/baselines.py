@@ -391,18 +391,15 @@ class NLIClassifierService:
         self.search = YandexSearchService()
 
     def _run_nli(self, news_text: str, evidences: list[dict]) -> list[dict]:
-        nli = registry.nli
         for ev in evidences:
-            premise = f"{ev['title']}. {ev['content'][:300]}"
-            out = nli(
-                sequences=premise[:512],
-                candidate_labels=[news_text[:512]],
-                hypothesis_template="{}",
+            premise = f"{ev['title']}. {ev['content'][:800]}"
+            scores = registry.nli_scores(
+                premise=premise[:512],
+                hypothesis=news_text[:512],
             )
-            scores = dict(zip(out["labels"], out["scores"]))
-            ev["nli_entailment"] = float(scores.get("entailment", 0.0))
-            ev["nli_neutral"] = float(scores.get("neutral", 0.0))
-            ev["nli_contradiction"] = float(scores.get("contradiction", 0.0))
+            ev["nli_entailment"] = scores["entailment"]
+            ev["nli_neutral"] = scores["neutral"]
+            ev["nli_contradiction"] = scores["contradiction"]
         return evidences
 
     async def verify(self, news_text: str,

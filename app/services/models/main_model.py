@@ -39,7 +39,7 @@ class MainVerificationService:
             }
 
         ce = registry.cross_encoder
-        pairs = [[news_text, f"{ev['title']}. {ev['content']}"] for ev in evidences]
+        pairs = [[news_text, f"{ev['title']}. {ev['content'][:1000]}"] for ev in evidences]
         scores = await asyncio.to_thread(ce.predict,pairs)
 
         for ev, sc in zip(evidences, scores):

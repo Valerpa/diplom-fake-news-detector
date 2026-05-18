@@ -1,6 +1,4 @@
 import asyncio
-import logging
-from datetime import datetime, timezone
 from fastapi import APIRouter, Body
 from app.schemas.requests import AnalysisRequest
 from app.schemas.responses import (
@@ -9,7 +7,6 @@ from app.schemas.responses import (
     HeatmapResponse, HeatmapCell,
     SensitivityResponse, SensitivityTrial,
     CredibilityResponse,
-    TemporalResponse,
     ErrorAnalysisResponse, ErrorRecord,
     EvidenceItem,
 )

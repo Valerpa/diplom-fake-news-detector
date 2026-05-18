@@ -1,5 +1,7 @@
 import logging
 import re
+import httpx
+from bs4 import BeautifulSoup
 import asyncio
 import xml.etree.ElementTree as ET
 from gigachat import GigaChat
@@ -50,9 +52,29 @@ class YandexSearchService:
                      seen_urls: set | None = None) -> list[dict]:
         if seen_urls is None:
             seen_urls = set()
-        return await asyncio.to_thread(
+        results = await asyncio.to_thread(
             self._search_sync, query, n, seen_urls
         )
+        # Обогащаем результаты полным текстом
+        await self._enrich_content(results)
+        return results
+
+    async def _enrich_content(self, results: list[dict],
+                              max_chars: int = 2000) -> None:
+        """Параллельно загружает полные тексты для всех результатов."""
+        if not results:
+            return
+
+        tasks = [
+            self._fetch_full_text(r["url"], max_chars=max_chars)
+            for r in results
+        ]
+        full_texts = await asyncio.gather(*tasks)
+
+        for result, full_text in zip(results, full_texts):
+            if full_text and len(full_text) > len(result.get("content", "")):
+                result["content_snippet"] = result["content"]
+                result["content"] = full_text
 
     async def multi_search(self, queries: list[str],
                            n_per_query: int = 5) -> list[dict]:
@@ -93,6 +115,60 @@ class YandexSearchService:
     @staticmethod
     def _t(el) -> str:
         return "".join(el.itertext()).strip() if el is not None else ""
+
+    @staticmethod
+    def _extract_main_text(html: str, max_chars: int = 2000) -> str:
+        """Извлекает основной текст статьи из HTML."""
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Удаляем навигацию, скрипты, стили, футеры
+        for tag in soup.find_all(
+                ["script", "style", "nav", "footer", "header",
+                 "aside", "form", "iframe", "noscript"]
+        ):
+            tag.decompose()
+
+        # Пытаемся найти основной контент по типичным тегам/классам
+        main = (
+                soup.find("article")
+                or soup.find("main")
+                or soup.find("div", class_=re.compile(
+            r"article|content|body|text|post", re.I
+        ))
+        )
+        container = main if main else soup.body if soup.body else soup
+
+        # Собираем текст из абзацев
+        paragraphs = []
+        for p in container.find_all("p"):
+            text = p.get_text(strip=True)
+            if len(text) > 30:
+                paragraphs.append(text)
+
+        full_text = " ".join(paragraphs)
+        return full_text[:max_chars] if full_text else ""
+
+    async def _fetch_full_text(self, url: str,
+                               timeout: float = 5.0,
+                               max_chars: int = 2000) -> str:
+        """Загружает страницу и извлекает основной текст."""
+        try:
+            async with httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=True,
+                    verify=False,
+                    headers={"User-Agent": USER_AGENT},
+            ) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    return ""
+                content_type = resp.headers.get("content-type", "")
+                if "text/html" not in content_type:
+                    return ""
+                return self._extract_main_text(resp.text, max_chars)
+        except Exception as e:
+            logger.debug("Failed to fetch %s: %s", url, e)
+            return ""
 
 
 class GigaChatService:

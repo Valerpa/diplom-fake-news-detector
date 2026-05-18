@@ -149,23 +149,17 @@ class ContradictionHeatmapService:
                 "title": evidence.get("title", ""),
             }
 
-        nli = registry.nli
         cells = []
 
         for cs in claim_sents:
             for es in ev_sents:
-                out = nli(
-                    sequences=es[:512],
-                    candidate_labels=[cs[:512]],
-                    hypothesis_template="{}",
-                )
-                scores = dict(zip(out["labels"], out["scores"]))
+                scores = registry.nli_scores(premise=es, hypothesis=cs)
                 cells.append({
                     "claim_sentence": cs,
                     "evidence_sentence": es,
-                    "entailment": round(scores.get("entailment", 0.0), 4),
-                    "neutral": round(scores.get("neutral", 0.0), 4),
-                    "contradiction": round(scores.get("contradiction", 0.0), 4),
+                    "entailment": round(scores["entailment"], 4),
+                    "neutral": round(scores["neutral"], 4),
+                    "contradiction": round(scores["contradiction"], 4),
                 })
 
         return {
