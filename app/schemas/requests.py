@@ -44,7 +44,7 @@ class CompareRequest(BaseModel):
     methods: list[str] = Field(
         default=["main", "llm_zeroshot", "nli"],
         description="Which methods to include. Options: main, rubert, llm_zeroshot, "
-                    "corag, steel, nli, gnn"
+                    "corag, nli"
     )
     num_queries: int = Field(5, ge=1, le=10)
     gold_label: int | None = Field(
@@ -58,7 +58,7 @@ class GenerateQueriesRequest(BaseModel):
     num_queries: int = Field(5, ge=1, le=10)
     method: str = Field("main", description=(
         "Which method's query generator to use. "
-        "Options: main, corag, steel, nli, gnn"
+        "Options: main, corag, nli"
     ))
 
 
@@ -69,5 +69,5 @@ class RunWithQueriesRequest(BaseModel):
     max_rounds: int = Field(4, ge=1, le=8)
     method: str = Field("main", description=(
         "Какой из методов запустить. "
-        "Варианты: main, corag, steel, nli, gnn"
+        "Варианты: main, corag, nli"
     ))

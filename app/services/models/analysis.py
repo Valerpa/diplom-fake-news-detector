@@ -85,6 +85,23 @@ class SpanHighlightingService:
                 claims.append(line)
         return claims
 
+    async def claims_to_questions(self, claims: list[str]) -> list[str]:
+        numbered = "\n".join(f"{i+1}. {c}" for i, c in enumerate(claims))
+        system = (
+            "Переформулируй каждое утверждение в короткий конкретный вопрос, "
+            "на который можно найти ответ в тексте. "
+            "Выведи нумерованный список вопросов, ничего кроме списка."
+        )
+        raw = await self.llm.complete(system, numbered)
+        questions = []
+        for line in raw.split("\n"):
+            line = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
+            if len(line) > 5:
+                questions.append(line)
+        while len(questions) < len(claims):
+            questions.append(claims[len(questions)])
+        return questions[:len(claims)]
+
     def _extract_span_sync(self, question: str, context: str) -> dict:
         qa = registry.qa
         try:
@@ -99,6 +116,7 @@ class SpanHighlightingService:
     async def analyse(self, news_text: str, result: dict,
                       top_k_docs: int = 3) -> dict:
         sub_claims = await self.decompose_claim(news_text)
+        questions = await self.claims_to_questions(sub_claims)
 
         evs = sorted(
             [ev for ev in result.get("evidence", []) if "score" in ev],
@@ -109,12 +127,13 @@ class SpanHighlightingService:
         for ev in evs:
             context = f"{ev['title']}. {ev['content']}"
             sc_results = []
-            for sc in sub_claims:
+            for sc, q in zip(sub_claims, questions):
                 span = await asyncio.to_thread(
-                    self._extract_span_sync, sc, context
+                    self._extract_span_sync, q, context
                 )
                 sc_results.append({
                     "sub_claim": sc,
+                    "question": q,
                     "evidence_span": span["answer"],
                     "confidence": span["confidence"],
                 })
@@ -129,6 +148,7 @@ class SpanHighlightingService:
         return {
             "news": news_text,
             "sub_claims": sub_claims,
+            "questions": questions,
             "evidence": evidence_analysis,
         }
 
@@ -292,78 +312,6 @@ def _parse_date(date_str: str) -> datetime | None:
         return dt
     except Exception:
         return None
-
-
-FAILURE_CATEGORIES = {
-    "no_evidence": "Search returned fewer than 2 documents",
-    "low_confidence": "P(true) ∈ [0.4, 0.6] — model uncertain",
-    "source_dominated": "One source accounts for >80% of softmax weight",
-    "all_neutral": "All evidence scores ≈ 0",
-    "correct": "Correct classification",
-    "false_positive": "Fake classified as real",
-    "false_negative": "Real classified as fake",
-}
-
-
-def _categorise_error(prob: float, pred: int, gold: int,
-                      n_evidence: int, scores: list[float]) -> str:
-    if n_evidence < 2:
-        return "no_evidence"
-    if abs(prob - 0.5) < 0.1:
-        return "low_confidence"
-    if scores:
-        sig = np.array([_sigmoid(s) for s in scores])
-        sm = np.exp(sig) / np.exp(sig).sum()
-        if sm.max() > 0.8:
-            return "source_dominated"
-    if scores and all(abs(s) < 0.5 for s in scores):
-        return "all_neutral"
-    if pred == gold:
-        return "correct"
-    return "false_positive" if pred == 1 else "false_negative"
-
-
-def error_analysis(results_with_labels: list[dict]) -> dict:
-    from sklearn.metrics import accuracy_score, f1_score
-
-    records = []
-    for item in results_with_labels:
-        scores = [ev.get("score", 0.0) for ev in item.get("evidence", [])]
-        cat = _categorise_error(
-            item.get("probability", 0.5),
-            item.get("pred", 0),
-            item.get("gold", 0),
-            len(item.get("evidence", [])),
-            scores,
-        )
-        evidence_list = item.get("evidence", [])
-        domains = [ev.get("domain", "") for ev in evidence_list]
-        records.append({
-            **item,
-            "category": cat,
-            "n_evidence": len(evidence_list),
-            "correct": int(item.get("pred", 0) == item.get("gold", 0)),
-            "top_domain": max(set(domains), key=domains.count) if domains else "",
-        })
-
-    valid = [r for r in records if r.get("pred", -1) != -1]
-    if not valid:
-        return {"records": records, "accuracy": 0.0, "f1_weighted": 0.0,
-                "category_counts": {}}
-
-    golds = [r["gold"] for r in valid]
-    preds = [r["pred"] for r in valid]
-    cats = defaultdict(int)
-    for r in valid:
-        cats[r["category"]] += 1
-
-    return {
-        "records": records,
-        "accuracy": float(accuracy_score(golds, preds)),
-        "f1_weighted": float(f1_score(golds, preds, average="weighted",
-                                      zero_division=0)),
-        "category_counts": dict(cats),
-    }
 
 
 def inter_method_agreement(method_results: dict[str, dict],

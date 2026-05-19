@@ -120,24 +120,6 @@ class TemporalResponse(BaseModel):
     evidence: list[EvidenceItem]
 
 
-class ErrorRecord(BaseModel):
-    text: str
-    gold: int
-    pred: int
-    probability: float | None
-    n_evidence: int
-    category: str
-    correct: int
-    top_domain: str
-
-
-class ErrorAnalysisResponse(BaseModel):
-    accuracy: float
-    f1_weighted: float
-    records: list[ErrorRecord]
-    category_counts: dict[str, int]
-
-
 class MethodResult(BaseModel):
     method: str
     label: str

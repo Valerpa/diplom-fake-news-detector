@@ -1,5 +1,5 @@
 import asyncio
-from fastapi import APIRouter, Body
+from fastapi import APIRouter
 from app.schemas.requests import AnalysisRequest
 from app.schemas.responses import (
     AttributionItem,
@@ -7,7 +7,6 @@ from app.schemas.responses import (
     HeatmapResponse, HeatmapCell,
     SensitivityResponse, SensitivityTrial,
     CredibilityResponse,
-    ErrorAnalysisResponse, ErrorRecord,
     EvidenceItem,
 )
 from app.services.models.main_model import MainVerificationService
@@ -17,8 +16,6 @@ from app.services.models.analysis import (
     ContradictionHeatmapService,
     QuerySensitivityService,
     source_credibility,
-    error_analysis,
-    inter_method_agreement,
 )
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
@@ -124,35 +121,4 @@ async def credibility(req: AnalysisRequest) -> CredibilityResponse:
                             if k in EvidenceItem.model_fields})
             for ev in weighted.get("evidence", [])
         ],
-    )
-
-
-@router.post("/errors", response_model=ErrorAnalysisResponse,
-             summary="Error taxonomy on a batch of labeled results")
-async def errors(
-        items: list = Body(
-            ...,
-            example=[
-                {"text": "...", "gold": 0, "pred": 1,
-                 "probability": 0.62, "evidence": []}
-            ],
-            description=(
-                "List of objects with keys: text, gold (int), pred (int), "
-                "probability (float), evidence (list)"
-            ),
-        )
-) -> ErrorAnalysisResponse:
-
-    analysis = error_analysis(items)
-    return ErrorAnalysisResponse(
-        accuracy=analysis["accuracy"],
-        f1_weighted=analysis["f1_weighted"],
-        records=[
-            ErrorRecord(**r) for r in analysis["records"]
-            if set(r.keys()) >= {
-                "text", "gold", "pred", "probability",
-                "n_evidence", "category", "correct", "top_domain"
-            }
-        ],
-        category_counts=analysis["category_counts"],
     )

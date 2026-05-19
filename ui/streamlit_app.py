@@ -1,6 +1,5 @@
 import html
 import json
-import time
 import httpx
 import pandas as pd
 import streamlit as st
@@ -24,7 +23,7 @@ STRINGS = {
         "tab_verify": "Verify",
         "tab_compare": "Compare methods",
         "tab_analysis": "Analysis",
-        "tab_errors": "Error analysis",
+        "tab_history": "History",
         # sidebar
         "sidebar_config": "Configuration",
         "sidebar_method": "Verification method",
@@ -80,25 +79,13 @@ STRINGS = {
         "an_claim_ph": "Leave blank to use today",
         "btn_analysis": "▶ Run analysis",
         "an_attr_title": "Evidence ranked by contribution to the verdict",
-        # errors tab
-        "err_title": "##### Upload a labeled dataset to run error taxonomy analysis",
-        "err_caption": "CSV with two columns: `text` (news text) and `label` (0 = fake, 1 = real)",
-        "err_upload": "Dataset CSV",
-        "err_text_col": "Text column name",
-        "err_label_col": "Label column name",
-        "btn_errors": "▶ Run error analysis",
-        "btn_stop": "Stop",
-        "err_accuracy": "Accuracy",
-        "err_f1": "F1 weighted",
-        "err_total": "Total items",
-        "err_errors": "Errors",
-        "err_taxonomy": "Failure taxonomy",
-        "err_records": "All records",
-        "err_gold": "Gold",
-        "err_pred": "Pred",
-        "err_correct": "Correct",
-        "err_category": "Category",
-        "err_eta": "ETA",
+        "col_domain": "Domain",
+        "col_title": "Title",
+        "col_ce_score": "CE score",
+        "col_contribution": "Contribution",
+        "col_direction": "Direction",
+        "dir_support": "support",
+        "dir_contradict": "contradict",
         # misc
         "api_ok": "API ✓  ·  device:",
         "api_loaded": "Loaded:",
@@ -155,7 +142,7 @@ STRINGS = {
         "tab_verify": "Проверка",
         "tab_compare": "Сравнение методов",
         "tab_analysis": "Анализ",
-        "tab_errors": "Анализ ошибок",
+        "tab_history": "История",
         # sidebar
         "sidebar_config": "Настройки",
         "sidebar_method": "Метод верификации",
@@ -206,30 +193,18 @@ STRINGS = {
         # analysis tab
         "an_title": "##### Запустить модуль анализа",
         "an_module": "Модуль",
-        "an_modules": ["Атрибуция", "Устойчивость", "NLI тепловая карта", "Чувствительность"],
+        "an_modules": ["Атрибуция", "Анализ утверждений", "NLI тепловая карта", "Чувствительность"],
         "an_claim_date": "Дата публикации (ISO, напр. 2025-01-15)",
         "an_claim_ph": "Оставьте пустым для текущей даты",
         "btn_analysis": "▶ Запустить анализ",
         "an_attr_title": "Доказательства по вкладу в вердикт",
-        # errors tab
-        "err_title": "##### Загрузите размеченный датасет для анализа ошибок",
-        "err_caption": "CSV с колонками: `text` (текст новости) и `label` (0 = ложь, 1 = правда)",
-        "err_upload": "CSV файл",
-        "err_text_col": "Название колонки с текстом",
-        "err_label_col": "Название колонки с меткой",
-        "btn_errors": "▶ Запустить анализ ошибок",
-        "btn_stop": "Остановить",
-        "err_accuracy": "Точность",
-        "err_f1": "F1 взвеш.",
-        "err_total": "Всего",
-        "err_errors": "Ошибок",
-        "err_taxonomy": "Таксономия ошибок",
-        "err_records": "Все записи",
-        "err_gold": "Истина",
-        "err_pred": "Предсказание",
-        "err_correct": "Верно",
-        "err_category": "Категория",
-        "err_eta": "ETA",
+        "col_domain": "Домен",
+        "col_title": "Заголовок",
+        "col_ce_score": "CE оценка",
+        "col_contribution": "Вклад",
+        "col_direction": "Направление",
+        "dir_support": "подтверждает",
+        "dir_contradict": "опровергает",
         # misc
         "api_ok": "API ✓  ·  устройство:",
         "api_loaded": "Загружено:",
@@ -287,8 +262,6 @@ if "lang" not in st.session_state:
     st.session_state["lang"] = "en"
 if "history" not in st.session_state:
     st.session_state["history"] = []
-if "ea_stop" not in st.session_state:
-    st.session_state["ea_stop"] = False
 if "news_text" not in st.session_state:
     st.session_state["news_text"] = ""
 if "cmp_text" not in st.session_state:
@@ -301,9 +274,21 @@ def T(key: str) -> str:
     return STRINGS[st.session_state["lang"]].get(key, key)
 
 
+def _toggle_lang():
+    st.session_state["lang"] = "ru" if st.session_state["lang"] == "en" else "en"
+
+
 def _sync_text(text: str):
     st.session_state["cmp_text"] = text
     st.session_state["an_text"] = text
+
+
+def _load_from_history(h_idx: int):
+    h = st.session_state["history"][h_idx]
+    st.session_state["last_result"] = h["full_result"]
+    st.session_state["last_text"] = h["full_text"]
+    st.session_state["news_text"] = h["full_text"]
+    _sync_text(h["full_text"])
 
 
 def _add_to_history(text: str, result: dict):
@@ -325,7 +310,7 @@ def _add_to_history(text: str, result: dict):
 
 def _clear_all():
     for key in ["last_result", "last_text", "cmp_result", "an_result",
-                "an_module_ran", "ea_result", "history", "pending_queries"]:
+                "an_module_ran", "history", "pending_queries"]:
         st.session_state.pop(key, None)
     st.session_state["history"] = []
     st.session_state["news_text"] = ""
@@ -612,25 +597,23 @@ with st.sidebar:
 
     method = st.selectbox(
         T("sidebar_method"),
-        options=["Main model", "CoRAG", "STEEL",
-                 "NLI classifier", "LLM zero-shot", "RuBERT", "GNN"],
+        options=["Main model", "CoRAG",
+                 "NLI classifier", "LLM zero-shot", "RuBERT"],
         index=0,
     )
 
     METHOD_MAP = {
         "Main model": ("main", "/verify"),
         "CoRAG": ("corag", "/baselines/corag"),
-        "STEEL": ("steel", "/baselines/steel"),
         "NLI classifier": ("nli", "/baselines/nli"),
         "LLM zero-shot": ("llm", "/baselines/llm"),
         "RuBERT": ("rubert", "/baselines/rubert"),
-        "GNN": ("gnn", "/baselines/gnn"),
     }
 
     num_queries = st.slider(T("sidebar_queries"), 1, 10, 5, step=1)
     num_results = st.slider(T("sidebar_results"), 1, 20, 5, step=1)
 
-    if method in ("CoRAG", "STEEL"):
+    if method == "CoRAG":
         max_rounds = st.slider(T("sidebar_rounds"), 1, 8, 4, step=1)
     else:
         max_rounds = 4
@@ -649,11 +632,9 @@ with st.sidebar:
         METHOD_MODELS = {
             "Main model": ["cross_encoder"],
             "CoRAG": [],
-            "STEEL": [],
             "NLI classifier": ["nli"],
             "LLM zero-shot": [],
             "RuBERT": [],
-            "GNN": ["sbert"],
         }
         required = METHOD_MODELS.get(method, [])
 
@@ -693,23 +674,6 @@ with st.sidebar:
     if st.button(T("sidebar_clear"), key="btn_clear"):
         _clear_all()
         st.rerun()
-    history = st.session_state.get("history", [])
-    if history:
-        st.markdown(f"### {T('sidebar_history')}")
-        for h_idx, h in enumerate(history):
-            lbl = h["label"]
-            color = "#a32d2d" if lbl == "ЛОЖНАЯ" else "#3b6d11" if lbl == "ПРАВДИВАЯ" else "#888"
-            prob_str = f"{h['probability']:.2f}" if h["probability"] is not None else "—"
-            text_preview = html.escape(h["text"][:50])
-            if st.button(
-                    f"{lbl} ({prob_str}) — {h['text'][:40]}…",
-                    key=f"hist_{h_idx}",
-            ):
-                st.session_state["last_result"] = h["full_result"]
-                st.session_state["last_text"] = h["full_text"]
-                st.session_state["news_text"] = h["full_text"]
-                _sync_text(h["full_text"])
-                st.rerun()
 
 title_col, badge_col, lang_col = st.columns([5, 2, 1])
 
@@ -718,13 +682,11 @@ with title_col:
 
 with lang_col:
     st.markdown('<div class="lang-btn">', unsafe_allow_html=True)
-    if st.button(T("lang_toggle"), key="lang_btn"):
-        st.session_state["lang"] = "ru" if st.session_state["lang"] == "en" else "en"
-        st.rerun()
+    st.button(T("lang_toggle"), key="lang_btn", on_click=_toggle_lang)
     st.markdown('</div>', unsafe_allow_html=True)
 
-tab_verify, tab_compare, tab_analysis, tab_errors = st.tabs([
-    T("tab_verify"), T("tab_compare"), T("tab_analysis"), T("tab_errors")
+tab_verify, tab_compare, tab_analysis, tab_history = st.tabs([
+    T("tab_verify"), T("tab_compare"), T("tab_analysis"), T("tab_history")
 ])
 
 with tab_verify:
@@ -917,7 +879,7 @@ with tab_verify:
                 mime="application/json",
             )
 
-with (tab_compare):
+with tab_compare:
     st.markdown(T("cmp_title"))
 
     cmp_text = st.text_area(
@@ -930,10 +892,8 @@ with (tab_compare):
         "Main model": "main",
         "LLM zero-shot": "llm_zeroshot",
         "CoRAG": "corag",
-        "STEEL": "steel",
         "NLI": "nli",
         "RuBERT": "rubert",
-        "GNN": "gnn",
     }
     selected_methods = st.multiselect(
         T("cmp_methods"),
@@ -1032,7 +992,7 @@ with tab_analysis:
         "Attribution": "/analysis/attribution",
         "Атрибуция": "/analysis/attribution",
         "Span highlighting": "/analysis/spans",
-        "Устойчивость": "/analysis/spans",
+        "Анализ утверждений": "/analysis/spans",
         "NLI heatmap": "/analysis/heatmap",
         "NLI тепловая карта": "/analysis/heatmap",
         "Sensitivity": "/analysis/sensitivity",
@@ -1079,16 +1039,17 @@ with tab_analysis:
 
             if an_module_ran == "/analysis/attribution" and isinstance(an_result, list):
                 st.caption(T("an_attr_title"))
-                df_attr = pd.DataFrame(an_result)[
-                    ["domain", "title", "score", "contribution", "direction"]
-                ].rename(columns={
-                    "domain": "Domain",
-                    "title": "Title",
-                    "score": "CE score",
-                    "contribution": "Contribution",
-                    "direction": "Direction",
-                })
-                df_attr["Title"] = df_attr["Title"].str[:60]
+                dir_map = {"support": T("dir_support"), "contradict": T("dir_contradict")}
+                rows = []
+                for item in an_result:
+                    rows.append({
+                        T("col_domain"): item.get("domain", ""),
+                        T("col_title"): (item.get("title", "") or "")[:60],
+                        T("col_ce_score"): item.get("score"),
+                        T("col_contribution"): item.get("contribution"),
+                        T("col_direction"): dir_map.get(item.get("direction", ""), item.get("direction", "")),
+                    })
+                df_attr = pd.DataFrame(rows)
                 st.dataframe(df_attr, use_container_width=True, hide_index=True)
 
             elif an_module_ran == "/analysis/spans":
@@ -1187,126 +1148,31 @@ with tab_analysis:
             else:
                 st.json(an_result)
 
-# ─── Tab: Error analysis ───────────────────────────────────────────────────────
+with tab_history:
+    history = st.session_state.get("history", [])
+    if not history:
+        st.info(T("enter_text2"))
+    else:
+        for h_idx, h in enumerate(history):
+            lbl = h["label"]
+            prob = h["probability"]
+            prob_str = f"{prob:.2f}" if prob is not None else "—"
+            vc = "verdict-fake" if lbl == "ЛОЖНАЯ" else "verdict-real" if lbl == "ПРАВДИВАЯ" else "verdict-unknown"
+            text_preview = html.escape(h["text"])
 
-with tab_errors:
-    st.markdown(T("err_title"))
-    st.caption(T("err_caption"))
-
-    uploaded = st.file_uploader(T("err_upload"), type=["csv"])
-    ea_text_col = st.text_input(T("err_text_col"), value="text", key="ea_tc")
-    ea_label_col = st.text_input(T("err_label_col"), value="label", key="ea_lc")
-
-    if uploaded and st.button(T("btn_errors"), type="primary", key="btn_errors"):
-        st.session_state["ea_stop"] = False
-        df_up = pd.read_csv(uploaded)
-        if ea_text_col not in df_up.columns or ea_label_col not in df_up.columns:
-            st.error(f"'{ea_text_col}' / '{ea_label_col}' {T('col_not_found')}")
-        else:
-            items = df_up[[ea_text_col, ea_label_col]].dropna().rename(
-                columns={ea_text_col: "text", ea_label_col: "label"}
-            ).to_dict("records")
-
-            total = len(items)
-
-            # (#15) Progress with ETA and stop button
-            progress = st.progress(0, text=T("verifying_batch"))
-            eta_placeholder = st.empty()
-            stop_placeholder = st.empty()
-
-            batch = []
-            start_time = time.time()
-
-            for idx, item in enumerate(items):
-                if st.session_state.get("ea_stop", False):
-                    st.warning(f"Stopped at {idx}/{total}")
-                    break
-
-                res = _post("/verify", {
-                    "text": item["text"], "num_queries": num_queries,
-                    "num_results": num_results,
-                }, timeout=120.0)
-                pred = 1 if res.get("label") == "ПРАВДИВАЯ" else 0
-                batch.append({
-                    "text": item["text"], "gold": int(item["label"]),
-                    "pred": pred, "probability": res.get("probability"),
-                    "evidence": res.get("evidence", []),
-                })
-
-                done = idx + 1
-                elapsed = time.time() - start_time
-                avg_per_item = elapsed / done
-                remaining = int(avg_per_item * (total - done))
-                mins, secs = divmod(remaining, 60)
-                eta_str = f"{mins}m {secs}s" if mins else f"{secs}s"
-
-                progress.progress(
-                    done / total,
-                    text=f"{T('verified')} {done}/{total}…",
-                )
-                eta_placeholder.caption(f"{T('err_eta')}: ~{eta_str}")
-
-                time.sleep(0.5)
-
-            eta_placeholder.empty()
-            stop_placeholder.empty()
-
-            if batch:
-                with st.spinner(T("computing_errors")):
-                    ea_result = _post("/analysis/errors", batch)
-                st.session_state["ea_result"] = ea_result
-    if st.button(T("btn_stop"), key="btn_stop_ea"):
-        st.session_state["ea_stop"] = True
-
-    ea_result = st.session_state.get("ea_result")
-    if ea_result and "error" not in ea_result:
-        st.markdown('<hr class="section-rule">', unsafe_allow_html=True)
-
-        render_metrics_row([
-            (T("err_accuracy"), f"{ea_result.get('accuracy', 0):.3f}"),
-            (T("err_f1"), f"{ea_result.get('f1_weighted', 0):.3f}"),
-            (T("err_total"), len(ea_result.get("records", []))),
-            (T("err_errors"), sum(1 for r in ea_result.get("records", [])
-                                  if r.get("category") != "correct")),
-        ])
-
-        cat_counts = ea_result.get("category_counts", {})
-        if cat_counts:
-            st.markdown("")
-            st.caption(T("err_taxonomy"))
-            CAT_COLORS = {
-                "correct": "#eaf3de",
-                "false_positive": "#fcebeb",
-                "false_negative": "#faeeda",
-                "no_evidence": "#f1efe8",
-                "low_confidence": "#e6f1fb",
-                "source_dominated": "#eeedfe",
-                "all_neutral": "#e1f5ee",
-            }
-            total_cats = sum(cat_counts.values())
-            for cat, count in sorted(cat_counts.items(), key=lambda x: -x[1]):
-                pct = count / total_cats if total_cats else 0
-                color = CAT_COLORS.get(cat, "#f1efe8")
-                st.markdown(
-                    f'<div style="display:grid;grid-template-columns:160px 1fr 60px;'
-                    f'gap:8px;align-items:center;padding:6px 9px;margin-bottom:4px;'
-                    f'background:{color};border-radius:6px;font-size:0.86rem">'
-                    f'<span style="color:#444">{cat}</span>'
-                    f'<div style="height:5px;background:rgba(0,0,0,0.08);border-radius:3px;overflow:hidden">'
-                    f'<div style="width:{int(pct * 100)}%;height:100%;background:rgba(0,0,0,0.2)"></div></div>'
-                    f'<span style="text-align:right;color:#666">{count} ({pct:.0%})</span></div>',
-                    unsafe_allow_html=True,
-                )
-
-        records = ea_result.get("records", [])
-        if records:
-            st.markdown("")
-            st.caption(T("err_records"))
-            st.dataframe(pd.DataFrame([{
-                "Text": r.get("text", "")[:70] + "…",
-                T("err_gold"): "ПРАВДА" if r.get("gold") == 1 else "ЛОЖЬ",
-                T("err_pred"): "ПРАВДА" if r.get("pred") == 1 else "ЛОЖЬ",
-                "P(true)": round(r.get("probability") or 0, 3),
-                T("err_category"): r.get("category", ""),
-                T("err_correct"): "✓" if r.get("correct") else "✗",
-            } for r in records]), use_container_width=True, hide_index=True)
+            st.markdown(
+                f'<div class="ev-card">'
+                f'<span class="{vc}" style="font-size:0.85rem;padding:4px 12px">'
+                f'{html.escape(lbl)}</span>'
+                f'  <span style="font-size:0.88rem;color:#999;font-family:monospace">'
+                f'P={prob_str}</span>'
+                f'<div class="ev-snippet" style="margin-top:6px">{text_preview}</div>'
+                f'</div>',
+                unsafe_allow_html=True,
+            )
+            st.button(
+                f"→ {T('tab_verify')}",
+                key=f"hist_{h_idx}",
+                on_click=_load_from_history,
+                args=(h_idx,),
+            )

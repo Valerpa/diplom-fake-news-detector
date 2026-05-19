@@ -1,5 +1,4 @@
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
 from fastapi import APIRouter, HTTPException
 from app.core.config import get_settings
 from app.schemas.requests import CompareRequest
@@ -7,7 +6,7 @@ from app.schemas.responses import CompareResponse, MethodResult
 from app.services.models.main_model import MainVerificationService
 from app.services.models.baselines import (
     RuBERTService, LLMClassifierService,
-    ChainOfRAGService, STEELService, NLIClassifierService, GNNService,
+    ChainOfRAGService, NLIClassifierService,
 )
 from app.services.models.analysis import inter_method_agreement
 
@@ -19,9 +18,7 @@ _VERIFIERS = {
     "rubert": RuBERTService(),
     "llm_zeroshot": LLMClassifierService(),
     "corag": ChainOfRAGService(),
-    "steel": STEELService(),
     "nli": NLIClassifierService(),
-    "gnn": GNNService(),
 }
 
 VALID_METHODS = set(_VERIFIERS.keys())
@@ -39,11 +36,11 @@ async def _run_one(name: str, text: str, num_queries: int,
             result = await asyncio.to_thread(
                 verifier.verify, text, threshold
             )
-        elif name in ("corag", "steel"):
+        elif name == "corag":
             result = await verifier.verify(
                 text, num_results=5, threshold=threshold
             )
-        elif name in ("nli", "gnn"):
+        elif name == "nli":
             result = await verifier.verify(
                 text, num_queries=num_queries,
                 num_results=5, threshold=threshold
@@ -69,7 +66,6 @@ async def compare(req: CompareRequest):
             detail=f"Unknown methods: {unknown}. Valid: {VALID_METHODS}"
         )
 
-    # Все методы запускаются параллельно
     tasks = [
         _run_one(name, req.text, req.num_queries, threshold)
         for name in req.methods

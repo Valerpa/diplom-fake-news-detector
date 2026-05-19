@@ -8,9 +8,7 @@ from app.services.models.baselines import (
     RuBERTService,
     LLMClassifierService,
     ChainOfRAGService,
-    STEELService,
     NLIClassifierService,
-    GNNService,
 )
 
 router = APIRouter(prefix="/baselines", tags=["baselines"])
@@ -19,9 +17,7 @@ settings = get_settings()
 _rubert = RuBERTService()
 _llm = LLMClassifierService()
 _corag = ChainOfRAGService()
-_steel = STEELService()
 _nli = NLIClassifierService()
-_gnn = GNNService()
 
 
 def _to_response(method: str, text: str, result: dict) -> BaselineResponse:
@@ -94,19 +90,6 @@ async def corag(req: BaselineRequest) -> BaselineResponse:
     return _to_response("corag", req.text, result)
 
 
-@router.post("/steel", response_model=BaselineResponse,
-             summary="STEEL: multi-round retrieval with LLM relevance filtering")
-async def steel(req: BaselineRequest) -> BaselineResponse:
-
-    result = await _steel.verify(
-        req.text,
-        max_rounds=req.max_rounds,
-        num_results=req.num_results,
-        threshold=settings.default_threshold,
-    )
-    return _to_response("steel", req.text, result)
-
-
 @router.post("/nli", response_model=BaselineResponse,
              summary="NLI-based entailment classifier (mDeBERTa)")
 async def nli(req: BaselineRequest) -> BaselineResponse:
@@ -118,39 +101,3 @@ async def nli(req: BaselineRequest) -> BaselineResponse:
         threshold=settings.default_threshold,
     )
     return _to_response("nli", req.text, result)
-
-
-@router.post("/gnn", response_model=BaselineResponse,
-             summary="Graph Attention Network classifier (requires training)")
-async def gnn(req: BaselineRequest) -> BaselineResponse:
-
-    result = await _gnn.verify(
-        req.text,
-        num_queries=req.num_queries,
-        num_results=req.num_results,
-        threshold=settings.default_threshold,
-    )
-    return _to_response("gnn", req.text, result)
-
-
-@router.post("/gnn/train", summary="Train the GNN on a labeled CSV dataset")
-async def gnn_train(
-        file: UploadFile = File(..., description="CSV with 'text' and 'label' columns"),
-        text_col: str = "text",
-        label_col: str = "label",
-        epochs: int = 20,
-        num_queries: int = 5,
-        num_results: int = 4,
-):
-
-    with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-        shutil.copyfileobj(file.file, tmp)
-        tmp_path = tmp.name
-    try:
-        await asyncio.get_event_loop().run_in_executor(
-            None, lambda: _gnn.train(tmp_path, text_col=text_col, label_col=label_col,
-                                     epochs=epochs, num_queries=num_queries, num_results=num_results)
-        )
-    finally:
-        os.unlink(tmp_path)
-    return {"status": "ok", "message": "GNN trained successfully."}

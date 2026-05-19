@@ -58,7 +58,7 @@ def health():
     }
 
 
-VALID_MODELS = {"cross_encoder", "nli", "qa", "sbert"}
+VALID_MODELS = {"cross_encoder", "nli", "qa"}
 
 
 @app.post("/models/preload", tags=["health"],
