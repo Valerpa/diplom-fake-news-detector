@@ -40,12 +40,10 @@ class AttributionItem(BaseModel):
     domain: str
     title: str
     score: float
-    prob_true: float = Field(..., alias="P(правда)")
+    prob_true: float
     contribution: float
     direction: str
     url: str
-
-    model_config = {"populate_by_name": True}
 
 
 class SubClaimSpan(BaseModel):

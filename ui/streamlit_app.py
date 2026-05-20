@@ -74,7 +74,7 @@ STRINGS = {
         # analysis tab
         "an_title": "##### Run analysis modules on any news text",
         "an_module": "Module",
-        "an_modules": ["Attribution", "Span highlighting", "NLI heatmap", "Sensitivity"],
+        "an_modules": ["Attribution", "Span highlighting", "NLI heatmap", "Sensitivity", "Fake signs"],
         "an_claim_date": "Claim date (ISO, e.g. 2025-01-15)",
         "an_claim_ph": "Leave blank to use today",
         "btn_analysis": "▶ Run analysis",
@@ -82,6 +82,7 @@ STRINGS = {
         "col_domain": "Domain",
         "col_title": "Title",
         "col_ce_score": "CE score",
+        "col_prob_true": "P(true)",
         "col_contribution": "Contribution",
         "col_direction": "Direction",
         "dir_support": "support",
@@ -136,6 +137,10 @@ STRINGS = {
         "btn_preload": "Load models",
         "models_loading": "Loading models…",
         "models_ready": "All required models are loaded ✓",
+        "spinning_signs": "Detecting fake signs…",
+        "signs_expander": "Fake signs — detected indicators",
+        "signs_detected": "Detected signs",
+        "signs_none": "No typical fake signs detected."
     },
     "ru": {
         "page_title": "Детектор фейков",
@@ -193,7 +198,7 @@ STRINGS = {
         # analysis tab
         "an_title": "##### Запустить модуль анализа",
         "an_module": "Модуль",
-        "an_modules": ["Атрибуция", "Анализ утверждений", "NLI тепловая карта", "Чувствительность"],
+        "an_modules": ["Атрибуция", "Анализ утверждений", "NLI тепловая карта", "Чувствительность", "Признаки недостоверности"],
         "an_claim_date": "Дата публикации (ISO, напр. 2025-01-15)",
         "an_claim_ph": "Оставьте пустым для текущей даты",
         "btn_analysis": "▶ Запустить анализ",
@@ -201,6 +206,7 @@ STRINGS = {
         "col_domain": "Домен",
         "col_title": "Заголовок",
         "col_ce_score": "CE оценка",
+        "col_prob_true": "P(правда)",
         "col_contribution": "Вклад",
         "col_direction": "Направление",
         "dir_support": "подтверждает",
@@ -255,6 +261,10 @@ STRINGS = {
         "btn_preload": "Загрузить модели",
         "models_loading": "Загрузка моделей…",
         "models_ready": "Все необходимые модели загружены ✓",
+        "spinning_signs": "Поиск признаков фейка…",
+        "signs_expander": "Признаки фейка — обнаруженные индикаторы",
+        "signs_detected": "Обнаруженные признаки",
+        "signs_none": "Типичные признаки фейка не обнаружены."
     },
 }
 
@@ -620,9 +630,9 @@ with st.sidebar:
 
     st.markdown("---")
     health = _get("/health", timeout=3.0)
-    threshold = 0.5  # fallback
+    threshold = 0.6  # fallback
     if "error" not in health:
-        threshold = health.get("threshold", 0.5)
+        threshold = health.get("threshold", 0.6)
         st.caption(f"{T('api_ok')} {health.get('device', '?')}")
         loaded_models = health.get("loaded_models", [])
         if loaded_models:
@@ -997,14 +1007,15 @@ with tab_analysis:
         "NLI тепловая карта": "/analysis/heatmap",
         "Sensitivity": "/analysis/sensitivity",
         "Чувствительность": "/analysis/sensitivity",
+        "Fake signs": "/analysis/signs",
+        "Признаки недостоверности": "/analysis/signs",
     }
     an_timeout_map = {
         "/analysis/attribution": 120,
         "/analysis/spans": 240,
         "/analysis/heatmap": 240,
         "/analysis/sensitivity": 360,
-        "/analysis/credibility": 120,
-        "/analysis/temporal": 120,
+        "/analysis/signs": 60
     }
 
     an_module = st.selectbox(T("an_module"), options=an_module_options, key="an_module")
@@ -1046,6 +1057,7 @@ with tab_analysis:
                         T("col_domain"): item.get("domain", ""),
                         T("col_title"): (item.get("title", "") or "")[:60],
                         T("col_ce_score"): item.get("score"),
+                        T("col_prob_true"): item.get("prob_true"),
                         T("col_contribution"): item.get("contribution"),
                         T("col_direction"): dir_map.get(item.get("direction", ""), item.get("direction", "")),
                     })
@@ -1122,29 +1134,40 @@ with tab_analysis:
                     c2.metric(T("sens_std"), f"{an_result.get('std_prob', 0):.3f}")
                     c3.metric(T("sens_stable_q"), T("sens_yes") if stable else T("sens_no"))
 
-            elif an_module_ran == "/analysis/credibility":
-                with st.expander(T("cred_expander"), expanded=True):
-                    changed = an_result.get("verdict_changed", False)
-                    c1, c2 = st.columns(2)
-                    c1.metric(T("cred_orig"), an_result.get("original_label", "?"),
-                              f"P = {an_result.get('original_probability', 0):.3f}")
-                    c2.metric(T("cred_weighted"), an_result.get("weighted_label", "?"),
-                              f"P = {an_result.get('weighted_probability', 0):.3f}",
-                              delta_color="inverse" if changed else "normal")
-                    if changed:
-                        st.markdown(f'<div class="warn-box">{T("cred_changed")}</div>',
-                                    unsafe_allow_html=True)
+            elif an_module_ran == "/analysis/signs":
+                with st.expander(T("signs_expander"), expanded=True):
+                    detected = an_result.get("detected_signs", [])
+                    all_signs = an_result.get("all_signs", [])
 
-            elif an_module_ran == "/analysis/temporal":
-                with st.expander(T("temp_expander"), expanded=True):
-                    tc1, tc2, tc3 = st.columns(3)
-                    tc1.metric(T("temp_dated"), an_result.get("dated_count", 0))
-                    tc2.metric(T("temp_undated"), an_result.get("undated_count", 0))
-                    tc3.metric(T("temp_verdict"), an_result.get("label_temporal", "?"),
-                               f"P = {an_result.get('prob_temporal', 0):.3f}")
-                    if an_result.get("verdict_changed"):
-                        st.markdown(f'<div class="warn-box">{T("temp_changed")}</div>',
-                                    unsafe_allow_html=True)
+                    if detected:
+                        st.markdown(f"**{T('signs_detected')}: {len(detected)}**")
+                        for s in detected:
+                            conf = s.get('confidence', 0)
+                            evidence = s.get('evidence', '')
+                            st.markdown(
+                                f"⚠️ **{s.get('name', '')}** "
+                                f"(conf: {conf:.2f})"
+                            )
+                            if evidence:
+                                st.caption(f"↳ {evidence}")
+                    else:
+                        st.success(T("signs_none"))
+
+                    if all_signs:
+                        rows = []
+                        for s in all_signs:
+                            rows.append({
+                                "№": s.get("id", ""),
+                                T("col_title"): s.get("name", ""),
+                                "✓": "✅" if s.get("present") else "–",
+                                "Conf": round(s.get("confidence", 0), 2),
+                            })
+                        st.dataframe(
+                            pd.DataFrame(rows),
+                            use_container_width=True,
+                            hide_index=True,
+                        )
+
             else:
                 st.json(an_result)
 

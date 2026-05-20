@@ -16,6 +16,7 @@ from app.services.models.analysis import (
     ContradictionHeatmapService,
     QuerySensitivityService,
     source_credibility,
+    FakeSignsService
 )
 
 router = APIRouter(prefix="/analysis", tags=["analysis"])
@@ -23,6 +24,7 @@ _main = MainVerificationService()
 _span_svc = SpanHighlightingService()
 _heat_svc = ContradictionHeatmapService()
 _sens_svc = QuerySensitivityService()
+_signs_svc = FakeSignsService()
 
 
 async def _get_result(req: AnalysisRequest) -> dict:
@@ -102,23 +104,8 @@ async def sensitivity(req: AnalysisRequest) -> SensitivityResponse:
         verdict_stable=data["verdict_stable"],
     )
 
-
-@router.post("/credibility", response_model=CredibilityResponse,
-             summary="Re-weight evidence by domain credibility")
-async def credibility(req: AnalysisRequest) -> CredibilityResponse:
-
-    result = await _get_result(req)
-    weighted = source_credibility(result, req.credibility_overrides)
-
-    return CredibilityResponse(
-        original_label=result.get("label", ""),
-        original_probability=result.get("probability"),
-        weighted_label=weighted.get("label_weighted", ""),
-        weighted_probability=weighted.get("probability_weighted"),
-        verdict_changed=weighted.get("verdict_changed", False),
-        evidence=[
-            EvidenceItem(**{k: v for k, v in ev.items()
-                            if k in EvidenceItem.model_fields})
-            for ev in weighted.get("evidence", [])
-        ],
-    )
+@router.post("/signs",
+             summary="Detect typical signs of fake news in the text")
+async def signs(req: AnalysisRequest):
+    data = await _signs_svc.analyse(req.text)
+    return data

@@ -1,6 +1,7 @@
 import logging
 import asyncio
 import re
+import json
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
@@ -312,6 +313,59 @@ def _parse_date(date_str: str) -> datetime | None:
         return dt
     except Exception:
         return None
+
+
+_FAKE_SIGNS_SYSTEM = """Ты — эксперт по верификации новостей. Проанализируй текст новости на наличие типичных признаков ложной информации.
+
+Список признаков:
+1. Шокирующий сенсационный заголовок — кликбейт, преувеличение масштаба события
+2. Лингвистические ошибки и стереотипные речевые модели — грамматические ошибки, канцеляризмы, неестественные формулировки
+3. Эмоциональное преувеличение — нагнетание паники, использование эмоционально окрашенной лексики
+4. Отсутствие ссылок на первоисточник — нет указания на конкретный источник информации, анонимные "эксперты"
+5. Подмена контекста — реальные факты используются в ложном контексте, вырваны из ситуации
+6. Множественное дублирование — одна и та же информация тиражируется без добавления новых фактов
+7. Некорректное использование статистики — вымышленные цифры, нерелевантная статистика, отсутствие источника данных
+
+Для каждого признака определи:
+- present: true/false — обнаружен ли признак
+- confidence: 0.0-1.0 — уверенность
+- evidence: конкретная цитата или описание, почему признак обнаружен (пустая строка если не обнаружен)
+
+Ответь строго JSON без markdown-разметки:
+{"signs": [{"id": 1, "name": "...", "present": true/false, "confidence": 0.0, "evidence": "..."}]}"""
+
+
+class FakeSignsService:
+
+    def __init__(self):
+        self.llm = GigaChatService()
+
+    async def analyse(self, news_text: str) -> dict:
+        raw = await self.llm.complete(
+            _FAKE_SIGNS_SYSTEM,
+            f"Новость: {news_text}"
+        )
+
+        parsed = None
+        try:
+            clean = re.sub(r"```(?:json)?|```", "", raw).strip()
+            parsed = json.loads(clean)
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+        if parsed and "signs" in parsed:
+            signs = parsed["signs"]
+        else:
+            signs = []
+
+        detected = [s for s in signs if s.get("present", False)]
+
+        return {
+            "news": news_text,
+            "all_signs": signs,
+            "detected_signs": detected,
+            "n_detected": len(detected),
+        }
 
 
 def inter_method_agreement(method_results: dict[str, dict],
