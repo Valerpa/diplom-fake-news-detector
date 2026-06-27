@@ -10,8 +10,8 @@ class Settings(BaseSettings):
     )
 
     gigachat_credentials: str = ""
-    gigachat_scope: str = "GIGACHAT_API_PERS"
-    gigachat_model: str = "GigaChat-2-Max"
+    gigachat_scope: str = ""
+    gigachat_model: str = ""
 
     yandex_folder_id: str = ""
     yandex_auth: str = ""
@@ -24,7 +24,7 @@ class Settings(BaseSettings):
     rubert_save_path: str = "./rubert_fakenews"
 
     default_num_queries: int = 5
-    default_threshold: float = 0.5
+    default_threshold: float = 0.6
     default_num_results: int = 5
 
     app_host: str = "0.0.0.0"

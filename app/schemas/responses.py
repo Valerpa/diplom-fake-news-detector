@@ -20,7 +20,7 @@ class EvidenceItem(BaseModel):
 
 class VerifyResponse(BaseModel):
     text: str
-    label: str = Field(..., description="'ПРАВДИВАЯ' | 'ФЕЙКОВАЯ' | 'НЕДОСТАТОЧНО ДАННЫХ'")
+    label: str = Field(..., description="'ПРАВДИВАЯ' | 'ЛОЖНАЯ' | 'НЕДОСТАТОЧНО ДАННЫХ'")
     probability: float | None
     queries: list[str]
     evidence: list[EvidenceItem]
@@ -40,12 +40,10 @@ class AttributionItem(BaseModel):
     domain: str
     title: str
     score: float
-    prob_true: float = Field(..., alias="P(правда)")
+    prob_true: float
     contribution: float
     direction: str
     url: str
-
-    model_config = {"populate_by_name": True}
 
 
 class SubClaimSpan(BaseModel):
@@ -118,24 +116,6 @@ class TemporalResponse(BaseModel):
     label_temporal: str
     verdict_changed: bool
     evidence: list[EvidenceItem]
-
-
-class ErrorRecord(BaseModel):
-    text: str
-    gold: int
-    pred: int
-    probability: float | None
-    n_evidence: int
-    category: str
-    correct: int
-    top_domain: str
-
-
-class ErrorAnalysisResponse(BaseModel):
-    accuracy: float
-    f1_weighted: float
-    records: list[ErrorRecord]
-    category_counts: dict[str, int]
 
 
 class MethodResult(BaseModel):
