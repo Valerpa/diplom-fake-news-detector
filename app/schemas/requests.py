@@ -12,7 +12,7 @@ class BaselineRequest(BaseModel):
     few_shot_examples: list[tuple[str, str]] | None = Field(
         None,
         description="Список примеров для few-shot классификации. Каждый пример — это кортеж (текст новости, метка), "
-                    "Класс должен быть 'ПРАВДИВАЯ' или 'ФЕЙКОВАЯ'."
+                    "Класс должен быть 'ПРАВДИВАЯ' или 'ЛОЖНАЯ'."
     )
     max_rounds: int = Field(4, ge=1, le=8)
     num_queries: int = Field(5, ge=1, le=10)
@@ -26,7 +26,6 @@ class AnalysisRequest(BaseModel):
         description="Pre-computed verification result dict. "
                     "If omitted the main model is invoked first."
     )
-    # Module-specific options
     top_k_docs: int = Field(3, ge=1, le=10)
     sensitivity_trials: int = Field(3, ge=2, le=10)
     claim_date: str | None = Field(
@@ -41,10 +40,10 @@ class AnalysisRequest(BaseModel):
 
 class CompareRequest(BaseModel):
     text: str = Field(..., min_length=10)
-    methods: List[str] = Field(
+    methods: list[str] = Field(
         default=["main", "llm_zeroshot", "nli"],
         description="Which methods to include. Options: main, rubert, llm_zeroshot, "
-                    "corag, steel, nli, gnn"
+                    "corag, nli"
     )
     num_queries: int = Field(5, ge=1, le=10)
     gold_label: int | None = Field(
@@ -58,16 +57,16 @@ class GenerateQueriesRequest(BaseModel):
     num_queries: int = Field(5, ge=1, le=10)
     method: str = Field("main", description=(
         "Which method's query generator to use. "
-        "Options: main, corag, steel, nli, gnn"
+        "Options: main, corag, nli"
     ))
 
 
 class RunWithQueriesRequest(BaseModel):
     text: str = Field(..., min_length=10)
-    queries: str | None = Field(..., min_items=1, description="Изменённый пользователем список поисковых запросов")
+    queries: list[str] = Field(..., min_length=1, description="Изменённый пользователем список поисковых запросов")
     num_results: int = Field(5, ge=1, le=20)
     max_rounds: int = Field(4, ge=1, le=8)
     method: str = Field("main", description=(
         "Какой из методов запустить. "
-        "Варианты: main, corag, steel, nli, gnn"
+        "Варианты: main, corag, nli"
     ))

@@ -1,5 +1,8 @@
 import logging
 import re
+import httpx
+from bs4 import BeautifulSoup
+import asyncio
 import xml.etree.ElementTree as ET
 from gigachat import GigaChat
 from gigachat.models import Chat, Messages, MessagesRole
@@ -10,7 +13,10 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-BLOCKED_DOMAINS = {"vk", "t.me", "ok.ru", "dzen.ru"}
+BLOCKED_DOMAINS = {"vk", "t.me", "ok.ru", "dzen.ru",
+                   "ya.ru/images", "yandex.ru/images", "images.google", "google.com/images",
+                   "pinterest", "flickr", "imgur", "gettyimages", "shutterstock"
+}
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -31,24 +37,53 @@ class YandexSearchService:
             auth=settings.yandex_auth,
         )
 
-    def search(self, query: str,
+    def _search_sync(self, query: str,
                n: int = 5,
                seen_urls: set | None = None) -> list[dict]:
         if seen_urls is None:
             seen_urls = set()
+        try:
+            search = self._sdk.search_api.web(search_type="ru", user_agent=USER_AGENT)
+            operation = search.run_deferred(query, format="xml", page=0)
+            xml = operation.wait().decode("utf-8")
+            return self._parse(xml, n, seen_urls)
+        except Exception as e:
+            logger.error(f"Yandex Search failed for query {query}: {e}")
+            return []
 
-        search = self._sdk.search_api.web(search_type="ru", user_agent=USER_AGENT)
-        operation = search.run_deferred(query, format="xml", page=0)
-        xml = operation.wait().decode("utf-8")
-        return self._parse(xml, n, seen_urls)
+    async def search(self, query: str, n: int = 5,
+                     seen_urls: set | None = None) -> list[dict]:
+        if seen_urls is None:
+            seen_urls = set()
+        results = await asyncio.to_thread(
+            self._search_sync, query, n, seen_urls
+        )
+        await self._enrich_content(results)
+        return results
 
-    def multi_search(self, queries: list[str],
-                     n_per_query: int = 5) -> list[dict]:
-        """Execute multiple queries with global deduplication."""
+    async def _enrich_content(self, results: list[dict],
+                              max_chars: int = 2000) -> None:
+        if not results:
+            return
+
+        tasks = [
+            self._fetch_full_text(r["url"], max_chars=max_chars)
+            for r in results
+        ]
+        full_texts = await asyncio.gather(*tasks)
+
+        for result, full_text in zip(results, full_texts):
+            if full_text and len(full_text) > len(result.get("content", "")):
+                result["content_snippet"] = result["content"]
+                result["content"] = full_text
+
+    async def multi_search(self, queries: list[str],
+                           n_per_query: int = 5) -> list[dict]:
         seen = set()
         evidences = []
         for q in queries:
-            evidences.extend(self.search(q, n=n_per_query, seen_urls=seen))
+            batch = await self.search(q, n=n_per_query, seen_urls=seen)
+            evidences.extend(batch)
         return evidences
 
     def _parse(self, xml_content: str, limit: int, seen: set) -> list[dict]:
@@ -82,6 +117,51 @@ class YandexSearchService:
     def _t(el) -> str:
         return "".join(el.itertext()).strip() if el is not None else ""
 
+    @staticmethod
+    def _extract_main_text(html: str, max_chars: int = 2000) -> str:
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup.find_all(
+                ["script", "style", "nav", "footer", "header",
+                 "aside", "form", "iframe", "noscript"]
+        ):
+            tag.decompose()
+        main = (
+                soup.find("article")
+                or soup.find("main")
+                or soup.find("div", class_=re.compile(
+            r"article|content|body|text|post", re.I
+        ))
+        )
+        container = main if main else soup.body if soup.body else soup
+        paragraphs = []
+        for p in container.find_all("p"):
+            text = p.get_text(strip=True)
+            if len(text) > 30:
+                paragraphs.append(text)
+        full_text = " ".join(paragraphs)
+        return full_text[:max_chars] if full_text else ""
+
+    async def _fetch_full_text(self, url: str,
+                               timeout: float = 5.0,
+                               max_chars: int = 2000) -> str:
+        try:
+            async with httpx.AsyncClient(
+                    timeout=timeout,
+                    follow_redirects=True,
+                    verify=False,
+                    headers={"User-Agent": USER_AGENT},
+            ) as client:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    return ""
+                content_type = resp.headers.get("content-type", "")
+                if "text/html" not in content_type:
+                    return ""
+                return self._extract_main_text(resp.text, max_chars)
+        except Exception as e:
+            logger.debug("Failed to fetch %s: %s", url, e)
+            return ""
+
 
 class GigaChatService:
 
@@ -93,35 +173,60 @@ class GigaChatService:
             verify_ssl_certs=False
         )
 
-    def complete(self, system: str, user: str) -> str:
-        payload = Chat(messages=[
-            Messages(role=MessagesRole.SYSTEM, content=system),
-            Messages(role=MessagesRole.USER, content=user),
-        ])
-        return self._giga.chat(payload).choices[0].message.content.strip()
+    def _complete_sync(self, system: str, user: str) -> str:
+        try:
+            payload = Chat(messages=[
+                Messages(role=MessagesRole.SYSTEM, content=system),
+                Messages(role=MessagesRole.USER, content=user),
+            ])
+            return self._giga.chat(
+                payload
+            ).choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"GigaChat completion failed: {e}")
+            return ""
 
-    def complete_messages(self, messages: list[dict]) -> str:
-        role_map = {
-            "system": MessagesRole.SYSTEM,
-            "user": MessagesRole.USER,
-            "assistant": MessagesRole.ASSISTANT,
-        }
-        giga_msgs = [
-            Messages(role=role_map[m["role"]], content=m["content"])
-            for m in messages
-        ]
-        return self._giga.chat(
-            Chat(messages=giga_msgs)
-        ).choices[0].message.content.strip()
+    async def complete(self, system: str, user: str) -> str:
+        return await asyncio.to_thread(
+            self._complete_sync, system, user
+        )
 
-    def generate_queries(self, news_text: str, n: int = 5) -> list[str]:
-        raw = self.complete(
+    def _complete_messages_sync(self, messages: list[dict]) -> str:
+        try:
+            role_map = {
+                "system": MessagesRole.SYSTEM,
+                "user": MessagesRole.USER,
+                "assistant": MessagesRole.ASSISTANT,
+            }
+            giga_msgs = [
+                Messages(role=role_map[m["role"]], content=m["content"])
+                for m in messages
+            ]
+            return self._giga.chat(
+                Chat(messages=giga_msgs)
+            ).choices[0].message.content.strip()
+        except Exception as e:
+            logger.error(f"GigaChat multi-message failed: {e}")
+            return ""
+
+    async def complete_messages(self, messages: list[dict]) -> str:
+        return await asyncio.to_thread(
+            self._complete_messages_sync, messages
+        )
+
+    async def generate_queries(self, news_text: str,
+                               n: int = 5) -> list[str]:
+        raw = await self.complete(
             _QUERY_SYSTEM.format(n=n),
             f"Новость: {news_text}\nКоличество запросов: {n}",
         )
+        if not raw:
+            logger.warning("Query generation returned empty, using fallback")
+            return [news_text[:150]]
+
         queries = []
         for line in raw.split("\n"):
             line = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
             if len(line) > 5:
                 queries.append(line)
-        return queries[:n]
+        return queries[:n] if queries else [news_text[:150]]

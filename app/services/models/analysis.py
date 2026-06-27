@@ -1,13 +1,16 @@
 import logging
+import asyncio
 import re
+import json
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
 import numpy as np
 from dateutil import parser as dateparser
 from app.core.config import get_settings
-from app.core.registry import registry
+from app.core.registry import registry, DEVICE
 from app.services.search_llm import GigaChatService, YandexSearchService
+from app.services.models.utils import _sigmoid, _label
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -26,14 +29,6 @@ DEFAULT_CREDIBILITY: dict[str, float] = {
     "pravda.ru": 0.25, "riafan.ru": 0.20,
 }
 CREDIBILITY_FALLBACK = 0.50
-
-
-def _sigmoid(x: float) -> float:
-    return float(1.0 / (1.0 + np.exp(-x)))
-
-
-def _label(prob: float, thr: float = 0.5) -> str:
-    return "ПРАВДИВАЯ" if prob >= thr else "ФЕЙКОВАЯ"
 
 
 def _get_credibility(domain: str,
@@ -77,13 +72,13 @@ class SpanHighlightingService:
     def __init__(self):
         self.llm = GigaChatService()
 
-    def decompose_claim(self, news_text: str) -> list[str]:
+    async def decompose_claim(self, news_text: str) -> list[str]:
         system = (
             "Разбей новостное утверждение на атомарные проверяемые факты. "
             "Каждый факт — одно конкретное утверждение. "
             "Выведи нумерованный список, ничего кроме списка."
         )
-        raw = self.llm.complete(system, f"Новость: {news_text}")
+        raw = await self.llm.complete(system, f"Новость: {news_text}")
         claims = []
         for line in raw.split("\n"):
             line = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
@@ -91,7 +86,24 @@ class SpanHighlightingService:
                 claims.append(line)
         return claims
 
-    def extract_span(self, question: str, context: str) -> dict:
+    async def claims_to_questions(self, claims: list[str]) -> list[str]:
+        numbered = "\n".join(f"{i+1}. {c}" for i, c in enumerate(claims))
+        system = (
+            "Переформулируй каждое утверждение в короткий конкретный вопрос, "
+            "на который можно найти ответ в тексте. "
+            "Выведи нумерованный список вопросов, ничего кроме списка."
+        )
+        raw = await self.llm.complete(system, numbered)
+        questions = []
+        for line in raw.split("\n"):
+            line = re.sub(r"^\d+[\.\)]\s*", "", line.strip())
+            if len(line) > 5:
+                questions.append(line)
+        while len(questions) < len(claims):
+            questions.append(claims[len(questions)])
+        return questions[:len(claims)]
+
+    def _extract_span_sync(self, question: str, context: str) -> dict:
         qa = registry.qa
         try:
             out = qa(question=question, context=context[:1500])
@@ -102,9 +114,10 @@ class SpanHighlightingService:
         except Exception:
             return {"answer": "", "confidence": 0.0}
 
-    def analyse(self, news_text: str, result: dict,
-                top_k_docs: int = 3) -> dict:
-        sub_claims = self.decompose_claim(news_text)
+    async def analyse(self, news_text: str, result: dict,
+                      top_k_docs: int = 3) -> dict:
+        sub_claims = await self.decompose_claim(news_text)
+        questions = await self.claims_to_questions(sub_claims)
 
         evs = sorted(
             [ev for ev in result.get("evidence", []) if "score" in ev],
@@ -115,29 +128,74 @@ class SpanHighlightingService:
         for ev in evs:
             context = f"{ev['title']}. {ev['content']}"
             sc_results = []
-            for sc in sub_claims:
-                span = self.extract_span(sc, context)
+            for sc, q in zip(sub_claims, questions):
+                span = await asyncio.to_thread(
+                    self._extract_span_sync, q, context
+                )
                 sc_results.append({
                     "sub_claim": sc,
+                    "question": q,
                     "evidence_span": span["answer"],
                     "confidence": span["confidence"],
                 })
+            if ev["score"] > 0.5:
+                direction = "support"
+            elif ev["score"] < -0.5:
+                direction = "contradict"
+            else:
+                direction = "neutral"
             evidence_analysis.append({
                 "domain": ev["domain"],
                 "title": ev["title"],
                 "score": ev["score"],
-                "direction": "support" if ev["score"] > 0 else "contradict",
+                "direction": direction,
                 "sub_claims": sc_results,
             })
 
         return {
             "news": news_text,
             "sub_claims": sub_claims,
+            "questions": questions,
             "evidence": evidence_analysis,
         }
 
 
 class ContradictionHeatmapService:
+
+    def __init__(self):
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        self._tok = None
+        self._model = None
+
+    def _ensure_loaded(self):
+        if self._model is None:
+            from transformers import (
+                AutoTokenizer, AutoModelForSequenceClassification
+            )
+            model_name = get_settings().nli_model
+            self._tok = AutoTokenizer.from_pretrained(model_name)
+            self._model = AutoModelForSequenceClassification.from_pretrained(
+                model_name
+            ).to(DEVICE)
+            self._model.eval()
+            logger.info("NLI direct model loaded for heatmap.")
+
+    def _nli_scores(self, premise: str, hypothesis: str) -> dict:
+        """Прямой NLI-инференс: premise → hypothesis."""
+        import torch
+        self._ensure_loaded()
+        inputs = self._tok(
+            premise, hypothesis,
+            return_tensors="pt", truncation=True, max_length=512
+        ).to(DEVICE)
+        with torch.no_grad():
+            logits = self._model(**inputs).logits
+            probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+        return {
+            "contradiction": float(probs[0]),
+            "neutral": float(probs[1]),
+            "entailment": float(probs[2]),
+        }
 
     def build(self, news_text: str, evidence: dict) -> dict:
         claim_sents = _split_sentences(news_text)
@@ -153,23 +211,16 @@ class ContradictionHeatmapService:
                 "title": evidence.get("title", ""),
             }
 
-        nli = registry.nli
         cells = []
-
         for cs in claim_sents:
             for es in ev_sents:
-                out = nli(
-                    sequences=es[:512],
-                    candidate_labels=[cs[:512]],
-                    hypothesis_template="{}",
-                )
-                scores = dict(zip(out["labels"], out["scores"]))
+                scores = self._nli_scores(es, cs)
                 cells.append({
                     "claim_sentence": cs,
                     "evidence_sentence": es,
-                    "entailment": round(scores.get("entailment", 0.0), 4),
-                    "neutral": round(scores.get("neutral", 0.0), 4),
-                    "contradiction": round(scores.get("contradiction", 0.0), 4),
+                    "entailment": round(scores["entailment"], 4),
+                    "neutral": round(scores["neutral"], 4),
+                    "contradiction": round(scores["contradiction"], 4),
                 })
 
         return {
@@ -187,25 +238,35 @@ class QuerySensitivityService:
         self.llm = GigaChatService()
         self.search = YandexSearchService()
 
-    def run(self, news_text: str,
-            n_trials: int = 3,
-            n_queries: int = 5,
-            n_results: int = 5) -> dict:
+    async def run(self, news_text: str,
+                  n_trials: int = 3,
+                  n_queries: int = 5,
+                  n_results: int = 5) -> dict:
 
         trial_results = []
 
         for trial in range(n_trials):
             logger.info("[Sensitivity] Trial %d/%d", trial + 1, n_trials)
-            queries = self.llm.generate_queries(news_text, n_queries)
-            evidences = self.search.multi_search(queries, n_per_query=n_results)
+            queries = await self.llm.generate_queries(news_text, n_queries)
 
             query_scores = []
+            all_evidences = []
+            seen_urls = set()
             ce = registry.cross_encoder
 
-            for q, evs in zip(queries, self._group_by_query(queries, evidences, n_results)):
+            for q in queries:
+                evs = await self.search.search(
+                    q, n=n_results, seen_urls=seen_urls
+                )
+                all_evidences.extend(evs)
+
                 if evs:
-                    pairs = [[news_text, f"{ev['title']}. {ev['content']}"] for ev in evs]
-                    scores = ce.predict(pairs).tolist()
+                    pairs = [
+                        [news_text, f"{ev['title']}. {ev['content'][:1000]}"]
+                        for ev in evs
+                    ]
+                    scores = await asyncio.to_thread(ce.predict, pairs)
+                    scores = scores.tolist()
                     for ev, sc in zip(evs, scores):
                         ev["score"] = float(sc)
                     query_scores.append({
@@ -215,17 +276,22 @@ class QuerySensitivityService:
                         "max_score": float(np.max(scores)),
                     })
 
-            all_scores = [ev["score"] for ev in evidences if "score" in ev]
-            probability = _sigmoid(float(np.mean(all_scores))) if all_scores else 0.5
+            all_scores = [
+                ev["score"] for ev in all_evidences if "score" in ev
+            ]
+            probability = (
+                _sigmoid(float(np.mean(all_scores)))
+                if all_scores else 0.5
+            )
 
             trial_results.append({
                 "trial": trial + 1,
                 "probability": probability,
                 "label": _label(probability),
-                "n_evidences": len(evidences),
+                "n_evidences": len(all_evidences),
                 "queries": query_scores,
             })
-            time.sleep(1)
+            await asyncio.sleep(1)
 
         probs = [t["probability"] for t in trial_results]
         return {
@@ -289,68 +355,57 @@ def _parse_date(date_str: str) -> datetime | None:
         return None
 
 
-FAILURE_CATEGORIES = {
-    "no_evidence": "Search returned fewer than 2 documents",
-    "low_confidence": "P(true) ∈ [0.4, 0.6] — model uncertain",
-    "source_dominated": "One source accounts for >80% of softmax weight",
-    "all_neutral": "All evidence scores ≈ 0",
-    "correct": "Correct classification",
-    "false_positive": "Fake classified as real",
-    "false_negative": "Real classified as fake",
-}
+_FAKE_SIGNS_SYSTEM = """Ты — эксперт по верификации новостей. Проанализируй текст новости на наличие типичных признаков ложной информации.
+
+Список признаков:
+1. Шокирующий сенсационный заголовок — кликбейт, преувеличение масштаба события
+2. Лингвистические ошибки и стереотипные речевые модели — грамматические ошибки, канцеляризмы, неестественные формулировки
+3. Эмоциональное преувеличение — нагнетание паники, использование эмоционально окрашенной лексики
+4. Отсутствие ссылок на первоисточник — нет указания на конкретный источник информации, анонимные "эксперты"
+5. Подмена контекста — реальные факты используются в ложном контексте, вырваны из ситуации
+6. Множественное дублирование — одна и та же информация тиражируется без добавления новых фактов
+7. Некорректное использование статистики — вымышленные цифры, нерелевантная статистика, отсутствие источника данных
+
+Для каждого признака определи:
+- present: true/false — обнаружен ли признак
+- confidence: 0.0-1.0 — уверенность
+- evidence: конкретная цитата или описание, почему признак обнаружен (пустая строка если не обнаружен)
+
+Ответь строго JSON без markdown-разметки:
+{"signs": [{"id": 1, "name": "...", "present": true/false, "confidence": 0.0, "evidence": "..."}]}"""
 
 
-def _categorise_error(prob: float, pred: int, gold: int,
-                      n_evidence: int, scores: list[float]) -> str:
-    if n_evidence < 2:
-        return "no_evidence"
-    if abs(prob - 0.5) < 0.1:
-        return "low_confidence"
-    if scores:
-        sig = np.array([_sigmoid(s) for s in scores])
-        sm = np.exp(sig) / np.exp(sig).sum()
-        if sm.max() > 0.8:
-            return "source_dominated"
-    if scores and all(abs(s) < 0.5 for s in scores):
-        return "all_neutral"
-    if pred == gold:
-        return "correct"
-    return "false_positive" if pred == 1 else "false_negative"
+class FakeSignsService:
 
+    def __init__(self):
+        self.llm = GigaChatService()
 
-def error_analysis(results_with_labels: list[dict]) -> dict:
-    from sklearn.metrics import accuracy_score, f1_score
-
-    records = []
-    for item in results_with_labels:
-        scores = [ev.get("score", 0.0) for ev in item.get("evidence", [])]
-        cat = _categorise_error(
-            item.get("probability", 0.5),
-            item.get("pred", 0),
-            item.get("gold", 0),
-            len(item.get("evidence", [])),
-            scores,
+    async def analyse(self, news_text: str) -> dict:
+        raw = await self.llm.complete(
+            _FAKE_SIGNS_SYSTEM,
+            f"Новость: {news_text}"
         )
-        records.append({**item, "category": cat})
 
-    valid = [r for r in records if r.get("pred", -1) != -1]
-    if not valid:
-        return {"records": records, "accuracy": 0.0, "f1_weighted": 0.0,
-                "category_counts": {}}
+        parsed = None
+        try:
+            clean = re.sub(r"```(?:json)?|```", "", raw).strip()
+            parsed = json.loads(clean)
+        except (json.JSONDecodeError, ValueError):
+            pass
 
-    golds = [r["gold"] for r in valid]
-    preds = [r["pred"] for r in valid]
-    cats = defaultdict(int)
-    for r in valid:
-        cats[r["category"]] += 1
+        if parsed and "signs" in parsed:
+            signs = parsed["signs"]
+        else:
+            signs = []
 
-    return {
-        "records": records,
-        "accuracy": float(accuracy_score(golds, preds)),
-        "f1_weighted": float(f1_score(golds, preds, average="weighted",
-                                      zero_division=0)),
-        "category_counts": dict(cats),
-    }
+        detected = [s for s in signs if s.get("present", False)]
+
+        return {
+            "news": news_text,
+            "all_signs": signs,
+            "detected_signs": detected,
+            "n_detected": len(detected),
+        }
 
 
 def inter_method_agreement(method_results: dict[str, dict],
@@ -379,7 +434,7 @@ def inter_method_agreement(method_results: dict[str, dict],
     vote_counts = Counter(preds)
     majority_pred = vote_counts.most_common(1)[0][0]
     agree_frac = float(vote_counts[majority_pred] / len(preds))
-    consensus = "ПРАВДИВАЯ" if majority_pred == 1 else "ФЕЙКОВАЯ"
+    consensus = "ПРАВДИВАЯ" if majority_pred == 1 else "ЛОЖНАЯ"
     disagreement = len(vote_counts) > 1
 
     kappa = None

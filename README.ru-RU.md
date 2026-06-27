@@ -7,7 +7,7 @@ REST API для определения ложных новостей на рус
 ## Структура проекта
 
 ```
-fakenews/
+fake-news-detector/
 ├── app/
 │   ├── main.py                        # FastAPI приложение, подключение роутеров, /health
 │   ├── core/
@@ -16,17 +16,20 @@ fakenews/
 │   ├── services/
 │   │   ├── search_llm.py              # YandexSearchService, GigaChatService
 │   │   └── models/
-│   │       ├── main_model.py          # Основной пайплайн
-│   │       ├── baselines.py           # 7 базовых методов
-│   │       └── analysis.py            # модули интерпретации
+│   │       ├── main_model.py          # Основной пайплайн верификации
+│   │       ├── baselines.py           # 4 базовых метода
+│   │       ├── analysis.py            # Модули интерпретации
+│   │       └── utils.py               # Общие утилиты
 │   ├── routers/
-│   │   ├── verify.py                  # POST /verify
+│   │   ├── verify.py                  # POST /verify, /verify/queries, /verify/run
 │   │   ├── baselines.py               # POST /baselines/{method}
 │   │   ├── analysis.py                # POST /analysis/{module}
 │   │   └── compare.py                 # POST /compare
 │   └── schemas/
 │       ├── requests.py                # Pydantic модели запросов
 │       └── responses.py               # Pydantic модели ответов
+├── ui/
+│   └── streamlit_app.py               # Streamlit UI
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
@@ -85,14 +88,13 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
 ---
 
-### `POST /verify` – Основная модель
+### `POST /verify` – Основная модель (полный пайплайн)
 
 ```json
 {
   "text": "С 2025 года проезды для пенсионеров в Москве станут бесплатными",
   "num_queries": 5,
-  "num_results": 5,
-  "threshold": 0.5
+  "num_results": 5
 }
 ```
 
@@ -100,7 +102,7 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```json
 {
   "text": "...",
-  "label": "ФЕЙКОВАЯ",
+  "label": "ЛОЖНАЯ",
   "probability": 0.34,
   "queries": ["пенсионеры Москва бесплатный проезд 2025", "..."],
   "evidence": [
@@ -113,31 +115,34 @@ uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 }
 ```
 
+Метки: `ПРАВДИВАЯ`, `ЛОЖНАЯ`, `НЕДОСТАТОЧНО ДАННЫХ`. Порог по умолчанию: `0.6`.
+
+#### Двухэтапная верификация
+
+Можно разделить пайплайн на два шага, чтобы просмотреть или отредактировать сгенерированные запросы:
+
+1. **`POST /verify/queries`** — генерация поисковых запросов без запуска поиска
+2. **`POST /verify/run`** — поиск и оценка с переданным списком запросов
+
 ---
 
 ### `POST /baselines/{method}`
 
-| Модель | Эндпоинт            | Описание                                                       |
+| Метод  | Эндпоинт            | Описание                                                       |
 |--------|---------------------|----------------------------------------------------------------|
 | RuBERT | `/baselines/rubert` | Fine-tuned классификатор, основанный исключительно на контенте |
 | LLM    | `/baselines/llm`    | GigaChat zero-shot / few-shot                                  |
 | CoRAG  | `/baselines/corag`  | Итеративный поиск (RAGAR, ACL 2024)                            |
-| STEEL  | `/baselines/steel`  | Многоэтапная фильтрация + фильтрация по релевантности с LLM    |
 | NLI    | `/baselines/nli`    | Оценка следствий/противоречий в mDeBERTa                       |
-| GNN    | `/baselines/gnn`    | Graph Attention Network (требуется обучение)                   |
 
 Все бейзлайны принимают то же тело запроса, что и `/verify`, а также поля, специфичные для метода (см. `/docs`).
 
-#### Эндпоинты для обучения
+#### Эндпоинт для обучения
 
 ```bash
 # Дообучить RuBERT
 curl -X POST http://localhost:8000/baselines/rubert/train \
   -F "file=@dataset.csv" -F "text_col=text" -F "label_col=label" -F "epochs=3"
-
-# Обучить GNN
-curl -X POST http://localhost:8000/baselines/gnn/train \
-  -F "file=@dataset.csv" -F "epochs=20"
 ```
 
 ---
@@ -163,8 +168,7 @@ curl -X POST http://localhost:8000/baselines/gnn/train \
 | Spans       | `/analysis/spans`       | Подпункты + противоречащий отрывок по каждому доказательству     |
 | Heatmap     | `/analysis/heatmap`     | Матрица «предложение × предложение» NLI (следствие/противоречие) |
 | Sensitivity | `/analysis/sensitivity` | Разброс P(true) по N независимым наборам запросов                |
-| Credibility | `/analysis/credibility` | Вердикт, взвешенный с учетом достоверности, по сравнению с первоначальным вердиктом                        |
-| Errors      | `/analysis/errors`      | Таксономия ошибок на основе набора помеченных результатов                   |
+| Signs       | `/analysis/signs`       | Обнаружение типичных признаков фейковой новости в тексте         |
 
 ---
 
@@ -185,19 +189,19 @@ curl -X POST http://localhost:8000/baselines/gnn/train \
   "text": "...",
   "gold_label": 0,
   "results": [
-    {"method": "main",       "label": "ФЕЙКОВАЯ", "probability": 0.34},
-    {"method": "llm_zeroshot","label": "ФЕЙКОВАЯ","probability": 0.28},
-    {"method": "nli",        "label": "ПРАВДИВАЯ","probability": 0.55}
+    {"method": "main",        "label": "ЛОЖНАЯ",    "probability": 0.34},
+    {"method": "llm_zeroshot","label": "ЛОЖНАЯ",    "probability": 0.28},
+    {"method": "nli",         "label": "ПРАВДИВАЯ", "probability": 0.55}
   ],
   "agreement_fraction": 0.25,
-  "consensus_label": "ФЕЙКОВАЯ",
+  "consensus_label": "ЛОЖНАЯ",
   "disagreement": true
 }
 ```
 
-Допустимые названия методов: `main`, `rubert`, `llm_zeroshot`, `corag`, `steel`, `nli`, `gnn`
+Допустимые названия методов: `main`, `rubert`, `llm_zeroshot`, `corag`, `nli`
 
-> **Совет:** Старайтесь не использовать `corag`, `steel` и `gnn` в `/compare`, если у вас нет времени — каждое из них добавляет 30–120 секунд.
+> **Совет:** `corag` в `/compare` добавляет 30–120 секунд из-за итеративного поиска.
 
 ---
 
@@ -208,9 +212,10 @@ curl -X POST http://localhost:8000/baselines/gnn/train \
 | `DiTy/cross-encoder-russian-msmarco`      | Первый `/verify` вызов                          | ~110 МБ       |
 | `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli` | Первый `/analysis/heatmap` или `/baselines/nli` | ~280 МБ       |
 | `deepset/xlm-roberta-large-squad2`        | Первый `/analysis/spans`                        | ~1.1 ГБ       |
-| `paraphrase-multilingual-mpnet-base-v2`   | Первый `/baselines/gnn`                         | ~280 МБ       |
 
-При первом запуске все модели загружаются с HuggingFaceHub и сохраняются в кэше `hf-cache` Docker volume.
+Модели можно предзагрузить через `POST /models/preload` со списком имён (`cross_encoder`, `nli`, `qa`).
+
+При первом запуске все модели загружаются с HuggingFace Hub и сохраняются в кэше `hf-cache` Docker volume.
 
 ---
 
