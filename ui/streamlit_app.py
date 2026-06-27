@@ -74,7 +74,7 @@ STRINGS = {
         # analysis tab
         "an_title": "##### Run analysis modules on any news text",
         "an_module": "Module",
-        "an_modules": ["Attribution", "Span highlighting", "NLI heatmap", "Sensitivity", "Fake signs"],
+        "an_modules": ["Attribution", "Span highlighting", "Sensitivity", "Fake signs"],
         "an_claim_date": "Claim date (ISO, e.g. 2025-01-15)",
         "an_claim_ph": "Leave blank to use today",
         "btn_analysis": "▶ Run analysis",
@@ -99,13 +99,11 @@ STRINGS = {
         "running": "Running",
         "spinning_attr": "Running attribution…",
         "spinning_spans": "Running span highlighting (QA model)…",
-        "spinning_heatmap": "Running NLI heatmap (mDeBERTa)…",
         "spinning_sens": "Running sensitivity analysis (3 trials)…",
         "spinning_cred": "Running credibility weighting…",
         "spinning_temp": "Running temporal analysis…",
         "attr_expander": "Attribution — evidence contributions",
         "spans_expander": "Span highlighting — sub-claims",
-        "heatmap_expander": "NLI heatmap — contradiction matrix",
         "sens_expander": "Sensitivity — verdict stability",
         "cred_expander": "Credibility — source-weighted verdict",
         "temp_expander": "Temporal — recency-weighted verdict",
@@ -198,7 +196,7 @@ STRINGS = {
         # analysis tab
         "an_title": "##### Запустить модуль анализа",
         "an_module": "Модуль",
-        "an_modules": ["Атрибуция", "Анализ утверждений", "NLI тепловая карта", "Чувствительность", "Признаки недостоверности"],
+        "an_modules": ["Атрибуция", "Анализ утверждений", "Чувствительность", "Признаки недостоверности"],
         "an_claim_date": "Дата публикации (ISO, напр. 2025-01-15)",
         "an_claim_ph": "Оставьте пустым для текущей даты",
         "btn_analysis": "▶ Запустить анализ",
@@ -223,13 +221,11 @@ STRINGS = {
         "running": "Запуск",
         "spinning_attr": "Запуск attribution…",
         "spinning_spans": "Запуск выделения фрагментов (QA модель)…",
-        "spinning_heatmap": "Запуск NLI тепловой карты (mDeBERTa)…",
         "spinning_sens": "Запуск анализа чувствительности (3 прогона)…",
         "spinning_cred": "Запуск взвешивания по достоверности…",
         "spinning_temp": "Запуск временного анализа…",
         "attr_expander": "Атрибуция — вклад доказательств",
         "spans_expander": "Выделение фрагментов — атомарные утверждения",
-        "heatmap_expander": "NLI тепловая карта — матрица противоречий",
         "sens_expander": "Чувствительность — стабильность вердикта",
         "cred_expander": "Достоверность — взвешенный вердикт",
         "temp_expander": "Временной анализ — взвешенный вердикт",
@@ -630,7 +626,7 @@ with st.sidebar:
 
     st.markdown("---")
     health = _get("/health", timeout=3.0)
-    threshold = 0.6  # fallback
+    threshold = 0.6
     if "error" not in health:
         threshold = health.get("threshold", 0.6)
         st.caption(f"{T('api_ok')} {health.get('device', '?')}")
@@ -638,7 +634,6 @@ with st.sidebar:
         if loaded_models:
             st.caption(f"{T('api_loaded')} " + ", ".join(loaded_models))
 
-        # --- Model preload section ---
         METHOD_MODELS = {
             "Main model": ["cross_encoder"],
             "CoRAG": [],
@@ -1003,8 +998,6 @@ with tab_analysis:
         "Атрибуция": "/analysis/attribution",
         "Span highlighting": "/analysis/spans",
         "Анализ утверждений": "/analysis/spans",
-        "NLI heatmap": "/analysis/heatmap",
-        "NLI тепловая карта": "/analysis/heatmap",
         "Sensitivity": "/analysis/sensitivity",
         "Чувствительность": "/analysis/sensitivity",
         "Fake signs": "/analysis/signs",
@@ -1013,7 +1006,6 @@ with tab_analysis:
     an_timeout_map = {
         "/analysis/attribution": 120,
         "/analysis/spans": 240,
-        "/analysis/heatmap": 240,
         "/analysis/sensitivity": 360,
         "/analysis/signs": 60
     }
@@ -1088,31 +1080,6 @@ with tab_analysis:
                                 f' → <em>«{span_text[:80]}»</em>'
                                 f' <span style="color:#bbb;font-size:0.76rem">conf={conf:.2f}</span></div>',
                                 unsafe_allow_html=True)
-
-            elif an_module_ran == "/analysis/heatmap":
-                cells = an_result.get("cells", [])
-                c_sents = an_result.get("claim_sentences", [])
-                e_sents = an_result.get("evidence_sentences", [])
-                if cells and c_sents and e_sents:
-                    with st.expander(T("heatmap_expander"), expanded=True):
-                        st.caption(f"[{an_result.get('domain', '')}] {an_result.get('title', '')[:60]}")
-                        import numpy as np
-
-                        mat = np.zeros((len(c_sents), len(e_sents)))
-                        for cell in cells:
-                            ci = c_sents.index(cell["claim_sentence"])
-                            ei = e_sents.index(cell["evidence_sentence"])
-                            mat[ci, ei] = cell["contradiction"]
-                        df_hm = pd.DataFrame(
-                            mat,
-                            index=[f"C{i + 1}" for i in range(len(c_sents))],
-                            columns=[f"E{j + 1}" for j in range(len(e_sents))],
-                        )
-                        st.dataframe(
-                            df_hm.style.background_gradient(cmap="Reds", vmin=0, vmax=1).format("{:.2f}"),
-                            use_container_width=True,
-                        )
-                        st.caption("  ".join(f"E{j + 1}: {s[:60]}" for j, s in enumerate(e_sents)))
 
             elif an_module_ran == "/analysis/sensitivity":
                 with st.expander(T("sens_expander"), expanded=True):

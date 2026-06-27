@@ -13,7 +13,10 @@ from app.core.config import get_settings
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-BLOCKED_DOMAINS = {"vk", "t.me", "ok.ru", "dzen.ru"}
+BLOCKED_DOMAINS = {"vk", "t.me", "ok.ru", "dzen.ru",
+                   "ya.ru/images", "yandex.ru/images", "images.google", "google.com/images",
+                   "pinterest", "flickr", "imgur", "gettyimages", "shutterstock"
+}
 USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
     "AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -55,13 +58,11 @@ class YandexSearchService:
         results = await asyncio.to_thread(
             self._search_sync, query, n, seen_urls
         )
-        # Обогащаем результаты полным текстом
         await self._enrich_content(results)
         return results
 
     async def _enrich_content(self, results: list[dict],
                               max_chars: int = 2000) -> None:
-        """Параллельно загружает полные тексты для всех результатов."""
         if not results:
             return
 
@@ -118,17 +119,12 @@ class YandexSearchService:
 
     @staticmethod
     def _extract_main_text(html: str, max_chars: int = 2000) -> str:
-        """Извлекает основной текст статьи из HTML."""
         soup = BeautifulSoup(html, "html.parser")
-
-        # Удаляем навигацию, скрипты, стили, футеры
         for tag in soup.find_all(
                 ["script", "style", "nav", "footer", "header",
                  "aside", "form", "iframe", "noscript"]
         ):
             tag.decompose()
-
-        # Пытаемся найти основной контент по типичным тегам/классам
         main = (
                 soup.find("article")
                 or soup.find("main")
@@ -137,21 +133,17 @@ class YandexSearchService:
         ))
         )
         container = main if main else soup.body if soup.body else soup
-
-        # Собираем текст из абзацев
         paragraphs = []
         for p in container.find_all("p"):
             text = p.get_text(strip=True)
             if len(text) > 30:
                 paragraphs.append(text)
-
         full_text = " ".join(paragraphs)
         return full_text[:max_chars] if full_text else ""
 
     async def _fetch_full_text(self, url: str,
                                timeout: float = 5.0,
                                max_chars: int = 2000) -> str:
-        """Загружает страницу и извлекает основной текст."""
         try:
             async with httpx.AsyncClient(
                     timeout=timeout,
@@ -191,7 +183,7 @@ class GigaChatService:
                 payload
             ).choices[0].message.content.strip()
         except Exception as e:
-            logger.error("GigaChat completion failed: %s", e)
+            logger.error(f"GigaChat completion failed: {e}")
             return ""
 
     async def complete(self, system: str, user: str) -> str:
@@ -214,7 +206,7 @@ class GigaChatService:
                 Chat(messages=giga_msgs)
             ).choices[0].message.content.strip()
         except Exception as e:
-            logger.error("GigaChat multi-message failed: %s", e)
+            logger.error(f"GigaChat multi-message failed: {e}")
             return ""
 
     async def complete_messages(self, messages: list[dict]) -> str:

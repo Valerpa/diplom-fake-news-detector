@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 import numpy as np
 from dateutil import parser as dateparser
 from app.core.config import get_settings
-from app.core.registry import registry
+from app.core.registry import registry, DEVICE
 from app.services.search_llm import GigaChatService, YandexSearchService
 from app.services.models.utils import _sigmoid, _label
 
@@ -138,11 +138,17 @@ class SpanHighlightingService:
                     "evidence_span": span["answer"],
                     "confidence": span["confidence"],
                 })
+            if ev["score"] > 0.5:
+                direction = "support"
+            elif ev["score"] < -0.5:
+                direction = "contradict"
+            else:
+                direction = "neutral"
             evidence_analysis.append({
                 "domain": ev["domain"],
                 "title": ev["title"],
                 "score": ev["score"],
-                "direction": "support" if ev["score"] > 0 else "contradict",
+                "direction": direction,
                 "sub_claims": sc_results,
             })
 
@@ -155,6 +161,41 @@ class SpanHighlightingService:
 
 
 class ContradictionHeatmapService:
+
+    def __init__(self):
+        from transformers import AutoTokenizer, AutoModelForSequenceClassification
+        self._tok = None
+        self._model = None
+
+    def _ensure_loaded(self):
+        if self._model is None:
+            from transformers import (
+                AutoTokenizer, AutoModelForSequenceClassification
+            )
+            model_name = get_settings().nli_model
+            self._tok = AutoTokenizer.from_pretrained(model_name)
+            self._model = AutoModelForSequenceClassification.from_pretrained(
+                model_name
+            ).to(DEVICE)
+            self._model.eval()
+            logger.info("NLI direct model loaded for heatmap.")
+
+    def _nli_scores(self, premise: str, hypothesis: str) -> dict:
+        """Прямой NLI-инференс: premise → hypothesis."""
+        import torch
+        self._ensure_loaded()
+        inputs = self._tok(
+            premise, hypothesis,
+            return_tensors="pt", truncation=True, max_length=512
+        ).to(DEVICE)
+        with torch.no_grad():
+            logits = self._model(**inputs).logits
+            probs = torch.softmax(logits, dim=1)[0].cpu().numpy()
+        return {
+            "contradiction": float(probs[0]),
+            "neutral": float(probs[1]),
+            "entailment": float(probs[2]),
+        }
 
     def build(self, news_text: str, evidence: dict) -> dict:
         claim_sents = _split_sentences(news_text)
@@ -171,10 +212,9 @@ class ContradictionHeatmapService:
             }
 
         cells = []
-
         for cs in claim_sents:
             for es in ev_sents:
-                scores = registry.nli_scores(premise=es, hypothesis=cs)
+                scores = self._nli_scores(es, cs)
                 cells.append({
                     "claim_sentence": cs,
                     "evidence_sentence": es,
@@ -222,7 +262,7 @@ class QuerySensitivityService:
 
                 if evs:
                     pairs = [
-                        [news_text, f"{ev['title']}. {ev['content']}"]
+                        [news_text, f"{ev['title']}. {ev['content'][:1000]}"]
                         for ev in evs
                     ]
                     scores = await asyncio.to_thread(ce.predict, pairs)

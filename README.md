@@ -7,7 +7,7 @@ REST API for Russian-language fake news detection, built with FastAPI.
 ## Project structure
 
 ```
-fakenews/
+fake-news-detector/
 ├── app/
 │   ├── main.py                        # FastAPI app, router wiring, /health
 │   ├── core/
@@ -16,17 +16,20 @@ fakenews/
 │   ├── services/
 │   │   ├── search_llm.py              # YandexSearchService, GigaChatService
 │   │   └── models/
-│   │       ├── main_model.py          # Original pipeline
-│   │       ├── baselines.py           # 7 baseline methods
-│   │       └── analysis.py            # explainability modules
+│   │       ├── main_model.py          # Main verification pipeline
+│   │       ├── baselines.py           # 4 baseline methods
+│   │       ├── analysis.py            # Explainability modules
+│   │       └── utils.py               # Shared utilities
 │   ├── routers/
-│   │   ├── verify.py                  # POST /verify
+│   │   ├── verify.py                  # POST /verify, /verify/queries, /verify/run
 │   │   ├── baselines.py               # POST /baselines/{method}
 │   │   ├── analysis.py                # POST /analysis/{module}
 │   │   └── compare.py                 # POST /compare
 │   └── schemas/
 │       ├── requests.py                # Pydantic request models
 │       └── responses.py               # Pydantic response models
+├── ui/
+│   └── streamlit_app.py               # Streamlit UI
 ├── Dockerfile
 ├── docker-compose.yml
 ├── requirements.txt
@@ -85,14 +88,13 @@ Returns service status and list of currently loaded models.
 
 ---
 
-### `POST /verify` — Main model
+### `POST /verify` — Main model (full pipeline)
 
 ```json
 {
   "text": "С 2025 года проезды для пенсионеров в Москве станут бесплатными",
   "num_queries": 5,
-  "num_results": 5,
-  "threshold": 0.5
+  "num_results": 5
 }
 ```
 
@@ -100,7 +102,7 @@ Returns service status and list of currently loaded models.
 ```json
 {
   "text": "...",
-  "label": "ФЕЙКОВАЯ",
+  "label": "ЛОЖНАЯ",
   "probability": 0.34,
   "queries": ["пенсионеры Москва бесплатный проезд 2025", "..."],
   "evidence": [
@@ -113,6 +115,15 @@ Returns service status and list of currently loaded models.
 }
 ```
 
+Labels: `ПРАВДИВАЯ`, `ЛОЖНАЯ`, `НЕДОСТАТОЧНО ДАННЫХ`. Default threshold: `0.6`.
+
+#### Two-step verification
+
+You can split the pipeline into two steps to inspect or edit generated queries:
+
+1. **`POST /verify/queries`** — generate search queries without running the search
+2. **`POST /verify/run`** — run search and scoring with a supplied query list
+
 ---
 
 ### `POST /baselines/{method}`
@@ -122,22 +133,16 @@ Returns service status and list of currently loaded models.
 | RuBERT | `/baselines/rubert` | Fine-tuned content-only classifier |
 | LLM | `/baselines/llm` | GigaChat zero-shot / few-shot |
 | CoRAG | `/baselines/corag` | Iterative retrieval (RAGAR, ACL 2024) |
-| STEEL | `/baselines/steel` | Multi-round + LLM relevance filtering |
 | NLI | `/baselines/nli` | mDeBERTa entailment/contradiction scoring |
-| GNN | `/baselines/gnn` | Graph Attention Network (needs training) |
 
 All baselines accept the same request body as `/verify` plus method-specific fields (see `/docs`).
 
-#### Training endpoints (supervised methods)
+#### Training endpoint
 
 ```bash
 # Fine-tune RuBERT
 curl -X POST http://localhost:8000/baselines/rubert/train \
   -F "file=@dataset.csv" -F "text_col=text" -F "label_col=label" -F "epochs=3"
-
-# Train GNN
-curl -X POST http://localhost:8000/baselines/gnn/train \
-  -F "file=@dataset.csv" -F "epochs=20"
 ```
 
 ---
@@ -163,8 +168,7 @@ If `result` is omitted, the main model runs first automatically.
 | Spans | `/analysis/spans` | Sub-claims + contradicting passage per evidence doc |
 | Heatmap | `/analysis/heatmap` | NLI sentence×sentence matrix (entailment/contradiction) |
 | Sensitivity | `/analysis/sensitivity` | P(true) variance across N independent query sets |
-| Credibility | `/analysis/credibility` | Credibility-weighted vs. original verdict |
-| Errors | `/analysis/errors` | Failure taxonomy on a batch of labeled results |
+| Signs | `/analysis/signs` | Detection of typical fake news indicators in the text |
 
 ---
 
@@ -185,20 +189,19 @@ If `result` is omitted, the main model runs first automatically.
   "text": "...",
   "gold_label": 0,
   "results": [
-    {"method": "main",       "label": "ФЕЙКОВАЯ", "probability": 0.34},
-    {"method": "single_rag", "label": "ФЕЙКОВАЯ", "probability": 0.41},
-    {"method": "llm_zeroshot","label": "ФЕЙКОВАЯ","probability": 0.28},
-    {"method": "nli",        "label": "ПРАВДИВАЯ","probability": 0.55}
+    {"method": "main",        "label": "ЛОЖНАЯ",    "probability": 0.34},
+    {"method": "llm_zeroshot","label": "ЛОЖНАЯ",    "probability": 0.28},
+    {"method": "nli",         "label": "ПРАВДИВАЯ", "probability": 0.55}
   ],
   "agreement_fraction": 0.25,
-  "consensus_label": "ФЕЙКОВАЯ",
+  "consensus_label": "ЛОЖНАЯ",
   "disagreement": true
 }
 ```
 
-Available method names: `main`, `rubert`, `llm_zeroshot`, `corag`, `steel`, `nli`, `gnn`
+Available method names: `main`, `rubert`, `llm_zeroshot`, `corag`, `nli`
 
-> **Tip:** Avoid `corag`, `steel`, `gnn` in `/compare` unless you have time — each adds 30–120s.
+> **Tip:** `corag` in `/compare` adds 30–120s due to iterative retrieval.
 
 ---
 
@@ -209,7 +212,8 @@ Available method names: `main`, `rubert`, `llm_zeroshot`, `corag`, `steel`, `nli
 | `DiTy/cross-encoder-russian-msmarco` | First `/verify` call | ~110 MB |
 | `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli` | First `/analysis/heatmap` or `/baselines/nli` | ~280 MB |
 | `deepset/xlm-roberta-large-squad2` | First `/analysis/spans` | ~1.1 GB |
-| `paraphrase-multilingual-mpnet-base-v2` | First `/baselines/gnn` | ~280 MB |
+
+You can preload models via `POST /models/preload` with a list of model names (`cross_encoder`, `nli`, `qa`).
 
 All models are downloaded from HuggingFace Hub on first use and cached in the `hf-cache` Docker volume.
 

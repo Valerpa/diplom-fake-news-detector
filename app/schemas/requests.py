@@ -26,7 +26,6 @@ class AnalysisRequest(BaseModel):
         description="Pre-computed verification result dict. "
                     "If omitted the main model is invoked first."
     )
-    # Module-specific options
     top_k_docs: int = Field(3, ge=1, le=10)
     sensitivity_trials: int = Field(3, ge=2, le=10)
     claim_date: str | None = Field(

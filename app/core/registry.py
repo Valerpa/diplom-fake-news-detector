@@ -13,8 +13,6 @@ logger = logging.getLogger(__name__)
 settings = get_settings()
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# Порядок меток в mDeBERTa-v3-base-mnli-xnli:
-# индекс 0 → contradiction, 1 → neutral, 2 → entailment
 _NLI_ID2LABEL = {0: "contradiction", 1: "neutral", 2: "entailment"}
 
 

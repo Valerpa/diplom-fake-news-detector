@@ -89,7 +89,6 @@ class MainVerificationService:
         label = "ПРАВДИВАЯ" if probability >= threshold else "ЛОЖНАЯ"
         reasoning = f"mean_ce_score={mean_score:.3f}"
 
-        # ── LLM fallback при низкой уверенности ──
         if 0.35 < probability < 0.65:
             logger.info(
                 "Low confidence (P=%.3f), running LLM fallback",
@@ -103,7 +102,6 @@ class MainVerificationService:
                 llm_reason = parsed.get("reasoning", "")
 
                 if not supported:
-                    # LLM считает, что источники не подтверждают новость
                     probability = min(probability, 1.0 - llm_conf)
                     label = "ЛОЖНАЯ"
                     reasoning += (
